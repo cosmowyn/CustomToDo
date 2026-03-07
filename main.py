@@ -57,6 +57,7 @@ from diagnostics_ui import DiagnosticsDialog
 from quick_capture_ui import QuickCaptureDialog
 from relationships_ui import RelationshipsPanel
 from snapshot_history_ui import SnapshotHistoryDialog
+from platform_utils import shortcut_display_text, shortcut_sequence
 from workspace_profiles import WorkspaceProfileManager
 from workspace_ui import WorkspaceManagerDialog
 from workflow_assist import (
@@ -183,7 +184,9 @@ class MainWindow(QMainWindow):
         # --- Quick add bar
         self.quick_add = QLineEdit()
         self.quick_add.setObjectName("QuickAddBar")
-        self.quick_add.setPlaceholderText("Quick add... e.g. Call supplier @work next week !p1 /today (Ctrl+L)")
+        self.quick_add.setPlaceholderText(
+            f"Quick add... e.g. Call supplier @work next week !p1 /today ({shortcut_display_text('Ctrl+L')})"
+        )
         self.quick_add.returnPressed.connect(self._quick_add_submit)
 
         self.view_mode = QComboBox()
@@ -221,7 +224,9 @@ class MainWindow(QMainWindow):
         # --- Search bar (above the view)
         self.search = QLineEdit()
         self.search.setObjectName("SearchBar")
-        self.search.setPlaceholderText("Search… (Ctrl+F)  status:todo priority:1 due<=today tag:work has:children")
+        self.search.setPlaceholderText(
+            f"Search… ({shortcut_display_text('Ctrl+F')})  status:todo priority:1 due<=today tag:work has:children"
+        )
         self.search.textChanged.connect(self._on_search_changed)
         self.search.setMinimumHeight(control_h)
 
@@ -378,12 +383,12 @@ class MainWindow(QMainWindow):
 
         # Shortcut: focus search
         focus_search = QAction(self)
-        focus_search.setShortcut(QKeySequence(Qt.CTRL | Qt.Key.Key_F))
+        focus_search.setShortcut(shortcut_sequence("Ctrl+F"))
         focus_search.triggered.connect(lambda: self.search.setFocus())
         self.addAction(focus_search)
 
         focus_quick_add = QAction(self)
-        focus_quick_add.setShortcut(QKeySequence(Qt.CTRL | Qt.Key.Key_L))
+        focus_quick_add.setShortcut(shortcut_sequence("Ctrl+L"))
         focus_quick_add.triggered.connect(lambda: self.quick_add.setFocus())
         self.addAction(focus_quick_add)
 
@@ -2056,6 +2061,19 @@ class MainWindow(QMainWindow):
         tip = str(text or "").strip()
         if not tip:
             return
+        shortcut_text = ""
+        try:
+            sequences = action.shortcuts()
+            if sequences:
+                shortcut_text = " / ".join(
+                    shortcut_display_text(seq) for seq in sequences if shortcut_display_text(seq)
+                )
+            elif not action.shortcut().isEmpty():
+                shortcut_text = shortcut_display_text(action.shortcut())
+        except Exception:
+            shortcut_text = ""
+        if shortcut_text:
+            tip = f"{tip} Shortcut: {shortcut_text}."
         action.setToolTip(tip)
         action.setStatusTip(tip)
         action.setWhatsThis(tip)
@@ -2105,8 +2123,14 @@ class MainWindow(QMainWindow):
 
     def _apply_widget_tooltips(self):
         explicit: list[tuple[QWidget, str]] = [
-            (self.quick_add, "Quick-add task input. Supports inline tags, bucket commands, planning phrases, and natural due dates."),
-            (self.search, "Search tasks with free text and operators like status:, due<=, tag:, has:."),
+            (
+                self.quick_add,
+                f"Quick-add task input. Supports inline tags, bucket commands, planning phrases, and natural due dates. Focus shortcut: {shortcut_display_text('Ctrl+L')}.",
+            ),
+            (
+                self.search,
+                f"Search tasks with free text and operators like status:, due<=, tag:, has:. Focus shortcut: {shortcut_display_text('Ctrl+F')}.",
+            ),
             (self.view_mode, "Choose a built-in perspective: All, Today, Upcoming, Inbox, Someday, Completed/Archive."),
             (self.sort_mode, "Choose how tasks are sorted in the current view."),
             (self.view, "Main task tree. Select rows, edit cells, and organize hierarchy."),
@@ -2329,7 +2353,7 @@ class MainWindow(QMainWindow):
         except Exception:
             return
         try:
-            hotkey = QHotkey(QKeySequence("Ctrl+Alt+Space"), True, self)
+            hotkey = QHotkey(shortcut_sequence("Ctrl+Alt+Space"), True, self)
             hotkey.activated.connect(self._open_quick_capture_dialog)
             self._global_capture_hotkey = hotkey
         except Exception:
@@ -2380,15 +2404,15 @@ class MainWindow(QMainWindow):
         redo_act.triggered.connect(self.undo_stack.redo)
 
         add_act = QAction("Add task", self)
-        add_act.setShortcut(QKeySequence(Qt.CTRL | Qt.Key.Key_N))
+        add_act.setShortcut(shortcut_sequence("Ctrl+N"))
         add_act.triggered.connect(self._add_task_and_edit)
 
         quick_capture_act = QAction("Quick capture…", self)
-        quick_capture_act.setShortcut(QKeySequence(Qt.CTRL | Qt.ALT | Qt.Key.Key_Space))
+        quick_capture_act.setShortcut(shortcut_sequence("Ctrl+Alt+Space"))
         quick_capture_act.triggered.connect(self._open_quick_capture_dialog)
 
         add_child_act = QAction("Add child task", self)
-        add_child_act.setShortcut(QKeySequence(Qt.CTRL | Qt.SHIFT | Qt.Key.Key_N))
+        add_child_act.setShortcut(shortcut_sequence("Ctrl+Shift+N"))
         add_child_act.triggered.connect(self._add_child_to_selected)
 
         archive_act = QAction("Archive task", self)
@@ -2403,19 +2427,19 @@ class MainWindow(QMainWindow):
         restore_act.triggered.connect(self._restore_selected)
 
         browse_archive_act = QAction("Browse archive…", self)
-        browse_archive_act.setShortcut(QKeySequence(Qt.CTRL | Qt.SHIFT | Qt.Key.Key_R))
+        browse_archive_act.setShortcut(shortcut_sequence("Ctrl+Shift+R"))
         browse_archive_act.triggered.connect(self._open_archive_browser)
 
         duplicate_act = QAction("Duplicate task", self)
-        duplicate_act.setShortcut(QKeySequence(Qt.CTRL | Qt.Key.Key_D))
+        duplicate_act.setShortcut(shortcut_sequence("Ctrl+D"))
         duplicate_act.triggered.connect(self._duplicate_selected)
 
         duplicate_tree_act = QAction("Duplicate with children", self)
-        duplicate_tree_act.setShortcut(QKeySequence(Qt.CTRL | Qt.SHIFT | Qt.Key.Key_D))
+        duplicate_tree_act.setShortcut(shortcut_sequence("Ctrl+Shift+D"))
         duplicate_tree_act.triggered.connect(self._duplicate_selected_subtree)
 
         bulk_edit_act = QAction("Bulk edit…", self)
-        bulk_edit_act.setShortcut(QKeySequence(Qt.CTRL | Qt.SHIFT | Qt.Key.Key_B))
+        bulk_edit_act.setShortcut(shortcut_sequence("Ctrl+Shift+B"))
         bulk_edit_act.triggered.connect(self._bulk_edit_selected)
 
         settings_act = QAction("Settings & Themes…", self)
@@ -2444,7 +2468,7 @@ class MainWindow(QMainWindow):
         toggle_focus_act = QAction("Focus mode", self)
         toggle_focus_act.setCheckable(True)
         toggle_focus_act.setChecked(False)
-        toggle_focus_act.setShortcut(QKeySequence(Qt.CTRL | Qt.SHIFT | Qt.Key.Key_F))
+        toggle_focus_act.setShortcut(shortcut_sequence("Ctrl+Shift+F"))
         toggle_focus_act.triggered.connect(lambda checked: self.focus_dock.setVisible(bool(checked)))
 
         toggle_calendar_act = QAction("Calendar/agenda", self)
@@ -2463,19 +2487,19 @@ class MainWindow(QMainWindow):
         toggle_analytics_act.triggered.connect(lambda checked: self.analytics_dock.setVisible(bool(checked)))
 
         collapse_all_act = QAction("Collapse all", self)
-        collapse_all_act.setShortcut(QKeySequence(Qt.CTRL | Qt.ALT | Qt.Key.Key_Up))
+        collapse_all_act.setShortcut(shortcut_sequence("Ctrl+Alt+Up"))
         collapse_all_act.triggered.connect(self._collapse_all)
 
         expand_all_act = QAction("Expand all", self)
-        expand_all_act.setShortcut(QKeySequence(Qt.CTRL | Qt.ALT | Qt.Key.Key_Down))
+        expand_all_act.setShortcut(shortcut_sequence("Ctrl+Alt+Down"))
         expand_all_act.triggered.connect(self._expand_all)
 
         move_up_act = QAction("Move task up", self)
-        move_up_act.setShortcut(QKeySequence(Qt.CTRL | Qt.SHIFT | Qt.Key.Key_Up))
+        move_up_act.setShortcut(shortcut_sequence("Ctrl+Shift+Up"))
         move_up_act.triggered.connect(lambda: self._move_selected_relative(-1))
 
         move_down_act = QAction("Move task down", self)
-        move_down_act.setShortcut(QKeySequence(Qt.CTRL | Qt.SHIFT | Qt.Key.Key_Down))
+        move_down_act.setShortcut(shortcut_sequence("Ctrl+Shift+Down"))
         move_down_act.triggered.connect(lambda: self._move_selected_relative(1))
 
         # Keyboard-first workflow shortcuts.
@@ -2541,7 +2565,7 @@ class MainWindow(QMainWindow):
         workspace_profiles_act.triggered.connect(self._open_workspace_manager)
 
         command_palette_act = QAction("Command palette…", self)
-        command_palette_act.setShortcut(QKeySequence(Qt.CTRL | Qt.SHIFT | Qt.Key.Key_P))
+        command_palette_act.setShortcut(shortcut_sequence("Ctrl+Shift+P"))
         command_palette_act.triggered.connect(self._open_command_palette)
 
         toggle_tooltips_act = QAction("Show tooltips", self)

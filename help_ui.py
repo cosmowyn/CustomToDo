@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QTextDocument
+from PySide6.QtGui import QKeySequence, QTextDocument
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -16,6 +16,12 @@ from PySide6.QtWidgets import (
     QTextBrowser,
     QVBoxLayout,
 )
+
+from platform_utils import shortcut_display_text
+
+
+def _sc(value: str | QKeySequence.StandardKey) -> str:
+    return f"<code>{shortcut_display_text(value)}</code>"
 
 
 @dataclass
@@ -214,6 +220,8 @@ HELP_CHAPTERS: list[HelpChapter] = [
         keywords=[
             "command palette",
             "ctrl+shift+p",
+            "cmd+shift+p",
+            "command+shift+p",
             "commands",
             "keyboard-first",
             "saved view",
@@ -224,8 +232,8 @@ HELP_CHAPTERS: list[HelpChapter] = [
             "snapshot",
             "relationships",
         ],
-        body_html="""
-        <p>Open the command palette with <code>Ctrl+Shift+P</code> to run actions without leaving the keyboard.</p>
+        body_html=f"""
+        <p>Open the command palette with {_sc("Ctrl+Shift+P")} to run actions without leaving the keyboard.</p>
         <ul>
             <li>Type part of a command title, alias, or keyword to filter the list.</li>
             <li>Press <strong>Enter</strong> to run the selected command.</li>
@@ -675,34 +683,34 @@ HELP_CHAPTERS: list[HelpChapter] = [
     HelpChapter(
         anchor="shortcuts",
         title="Keyboard Shortcuts",
-        keywords=["shortcuts", "keyboard", "hotkeys", "enter", "space", "ctrl", "f1"],
-        body_html="""
+        keywords=["shortcuts", "keyboard", "hotkeys", "enter", "space", "ctrl", "cmd", "command", "option", "f1"],
+        body_html=f"""
         <p><strong>General</strong></p>
         <ul>
-            <li><code>Ctrl+N</code> Add task</li>
-            <li><code>Ctrl+Shift+N</code> Add child task</li>
-            <li><code>Ctrl+F</code> Focus search</li>
-            <li><code>Ctrl+L</code> Focus quick add</li>
-            <li><code>Ctrl+Alt+Space</code> Open quick capture</li>
-            <li><code>Ctrl+Shift+P</code> Open command palette</li>
-            <li><code>Ctrl+Shift+F</code> Toggle focus mode</li>
+            <li>{_sc("Ctrl+N")} Add task</li>
+            <li>{_sc("Ctrl+Shift+N")} Add child task</li>
+            <li>{_sc("Ctrl+F")} Focus search</li>
+            <li>{_sc("Ctrl+L")} Focus quick add</li>
+            <li>{_sc("Ctrl+Alt+Space")} Open quick capture</li>
+            <li>{_sc("Ctrl+Shift+P")} Open command palette</li>
+            <li>{_sc("Ctrl+Shift+F")} Toggle focus mode</li>
             <li>Relationship inspector, workspace profiles, and snapshot history are available from the command palette for keyboard-first access.</li>
             <li><code>F1</code> Open the embedded help guide</li>
-            <li><code>Ctrl+Z</code> Undo (platform standard)</li>
-            <li><code>Ctrl+Shift+Z</code> or platform standard Redo</li>
+            <li>{_sc(QKeySequence.StandardKey.Undo)} Undo (platform standard)</li>
+            <li>{_sc(QKeySequence.StandardKey.Redo)} Redo (platform standard)</li>
         </ul>
         <p><strong>Tree actions</strong></p>
         <ul>
             <li><code>Delete</code> Archive selected task(s)</li>
             <li><code>Shift+Delete</code> Permanently delete selected task(s)</li>
-            <li><code>Ctrl+D</code> Duplicate selected task</li>
-            <li><code>Ctrl+Shift+D</code> Duplicate selected subtree</li>
-            <li><code>Ctrl+Shift+B</code> Open bulk edit</li>
-            <li><code>Ctrl+Shift+Up</code> Move selected task up</li>
-            <li><code>Ctrl+Shift+Down</code> Move selected task down</li>
-            <li><code>Ctrl+Shift+R</code> Open archive browser</li>
-            <li><code>Ctrl+Alt+Up</code> Collapse all</li>
-            <li><code>Ctrl+Alt+Down</code> Expand all</li>
+            <li>{_sc("Ctrl+D")} Duplicate selected task</li>
+            <li>{_sc("Ctrl+Shift+D")} Duplicate selected subtree</li>
+            <li>{_sc("Ctrl+Shift+B")} Open bulk edit</li>
+            <li>{_sc("Ctrl+Shift+Up")} Move selected task up</li>
+            <li>{_sc("Ctrl+Shift+Down")} Move selected task down</li>
+            <li>{_sc("Ctrl+Shift+R")} Open archive browser</li>
+            <li>{_sc("Ctrl+Alt+Up")} Collapse all</li>
+            <li>{_sc("Ctrl+Alt+Down")} Expand all</li>
             <li><code>Enter</code> Edit current cell when the tree has focus</li>
             <li><code>Space</code> Toggle collapse/expand on the current row</li>
         </ul>

@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from platform_utils import shortcut_display_text
 from ui_layout import add_left_aligned_buttons, configure_box_layout
 
 
@@ -51,9 +52,9 @@ class WelcomeDialog(QDialog):
             "  Call supplier tomorrow p1\n"
             "  Finish report next week high\n\n"
             "Core shortcuts:\n"
-            "  Ctrl+L focus Quick add\n"
-            "  Ctrl+F focus Search\n"
-            "  Ctrl+Shift+P open Command palette\n"
+            f"  {shortcut_display_text('Ctrl+L')} focus Quick add\n"
+            f"  {shortcut_display_text('Ctrl+F')} focus Search\n"
+            f"  {shortcut_display_text('Ctrl+Shift+P')} open Command palette\n"
             "  F1 open Help"
         )
         shortcuts_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
