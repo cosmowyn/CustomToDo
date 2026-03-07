@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Build and packaging artifacts
+build/
+dist/
+*.spec
+pip-wheel-metadata/
+build_assets/icons/*.icns
+build_assets/icons/*.iconset/
+
+# Test and tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+
+# IDE/editor files
+.vscode/
+.idea/
+*.code-workspace
+
+# OS and filesystem junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs, dumps, temp files
+*.log
+*.out
+*.err
+*.pid
+*.stackdump
+*.tmp
+*.temp
+
+# Local databases and exports
+*.sqlite3
+*.db
+task_backup_*.json
+themes_backup_*.json
+task_snapshot_*.json
+restored_tasks.sqlite3
+
+# Local environment files
+.env
+.env.*
