@@ -4,7 +4,7 @@ from datetime import date
 from PySide6.QtCore import Signal, Qt, QDate
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QGroupBox, QHBoxLayout, QCheckBox, QLabel,
-    QSpinBox, QDateEdit, QPushButton
+    QSpinBox, QDateEdit, QPushButton, QLineEdit
 )
 
 
@@ -30,6 +30,7 @@ class FilterPanel(QWidget):
 
         self.chk_all_status = QCheckBox("All")
         self.chk_all_status.setChecked(True)
+        self.chk_all_status.setToolTip("Enable or disable all status filters at once.")
         self.chk_all_status.stateChanged.connect(self._on_all_status_changed)
         v_status.addWidget(self.chk_all_status)
 
@@ -37,6 +38,7 @@ class FilterPanel(QWidget):
         for s in statuses:
             cb = QCheckBox(s)
             cb.setChecked(True)
+            cb.setToolTip(f"Include tasks with status: {s}.")
             cb.stateChanged.connect(self._emit_changed)
             self.status_checks.append(cb)
             v_status.addWidget(cb)
@@ -50,11 +52,13 @@ class FilterPanel(QWidget):
         self.prio_min = QSpinBox()
         self.prio_min.setRange(1, 5)
         self.prio_min.setValue(1)
+        self.prio_min.setToolTip("Minimum allowed priority for visible tasks.")
         self.prio_min.valueChanged.connect(self._emit_changed)
 
         self.prio_max = QSpinBox()
         self.prio_max.setRange(1, 5)
         self.prio_max.setValue(5)
+        self.prio_max.setToolTip("Maximum allowed priority for visible tasks.")
         self.prio_max.valueChanged.connect(self._emit_changed)
 
         h_prio.addWidget(QLabel("Min"))
@@ -71,6 +75,7 @@ class FilterPanel(QWidget):
 
         self.chk_due_range = QCheckBox("Enable due range")
         self.chk_due_range.setChecked(False)
+        self.chk_due_range.setToolTip("Limit visible tasks to a due-date date range.")
         self.chk_due_range.stateChanged.connect(self._emit_changed)
         v_due.addWidget(self.chk_due_range)
 
@@ -79,6 +84,7 @@ class FilterPanel(QWidget):
         self.due_from.setCalendarPopup(True)
         self.due_from.setDisplayFormat("dd-MMM-yyyy")
         self.due_from.setDate(QDate.currentDate())
+        self.due_from.setToolTip("Start date for due-date filter range.")
         self.due_from.dateChanged.connect(self._emit_changed)
 
         row1.addWidget(QLabel("From"))
@@ -90,6 +96,7 @@ class FilterPanel(QWidget):
         self.due_to.setCalendarPopup(True)
         self.due_to.setDisplayFormat("dd-MMM-yyyy")
         self.due_to.setDate(QDate.currentDate().addDays(30))
+        self.due_to.setToolTip("End date for due-date filter range.")
         self.due_to.dateChanged.connect(self._emit_changed)
 
         row2.addWidget(QLabel("To"))
@@ -103,23 +110,47 @@ class FilterPanel(QWidget):
         v_flags = QVBoxLayout(g_flags)
 
         self.chk_hide_done = QCheckBox("Hide Done")
+        self.chk_hide_done.setToolTip("Exclude tasks already marked Done.")
         self.chk_hide_done.stateChanged.connect(self._emit_changed)
 
         self.chk_overdue_only = QCheckBox("Overdue only")
+        self.chk_overdue_only.setToolTip("Show only tasks with due date before today.")
         self.chk_overdue_only.stateChanged.connect(self._emit_changed)
+
+        self.chk_blocked_only = QCheckBox("Blocked only")
+        self.chk_blocked_only.setToolTip("Show only tasks blocked by dependencies.")
+        self.chk_blocked_only.stateChanged.connect(self._emit_changed)
+
+        self.chk_waiting_only = QCheckBox("Waiting only")
+        self.chk_waiting_only.setToolTip("Show only tasks with waiting-for information.")
+        self.chk_waiting_only.stateChanged.connect(self._emit_changed)
 
         self.chk_show_children = QCheckBox("Show children of matching parents")
         self.chk_show_children.setChecked(True)
+        self.chk_show_children.setToolTip("Keep children visible when parent row matches search.")
         self.chk_show_children.stateChanged.connect(self._emit_changed)
 
         v_flags.addWidget(self.chk_hide_done)
         v_flags.addWidget(self.chk_overdue_only)
+        v_flags.addWidget(self.chk_blocked_only)
+        v_flags.addWidget(self.chk_waiting_only)
         v_flags.addWidget(self.chk_show_children)
 
         root.addWidget(g_flags)
 
+        # --- Tags
+        g_tags = QGroupBox("Tags")
+        v_tags = QVBoxLayout(g_tags)
+        self.tags_input = QLineEdit()
+        self.tags_input.setPlaceholderText("Comma-separated tags (all must match)")
+        self.tags_input.setToolTip("Filter to tasks containing all listed tags.")
+        self.tags_input.textChanged.connect(self._emit_changed)
+        v_tags.addWidget(self.tags_input)
+        root.addWidget(g_tags)
+
         # --- Reset
         self.btn_reset = QPushButton("Reset filters")
+        self.btn_reset.setToolTip("Reset all filter options to defaults.")
         self.btn_reset.clicked.connect(self.reset)
         root.addWidget(self.btn_reset)
 
@@ -168,6 +199,84 @@ class FilterPanel(QWidget):
     def show_children_of_matches(self) -> bool:
         return self.chk_show_children.isChecked()
 
+    def blocked_only(self) -> bool:
+        return self.chk_blocked_only.isChecked()
+
+    def waiting_only(self) -> bool:
+        return self.chk_waiting_only.isChecked()
+
+    def tag_filter(self) -> set[str]:
+        raw = self.tags_input.text().strip()
+        if not raw:
+            return set()
+        out = set()
+        for part in raw.split(","):
+            s = part.strip()
+            if s:
+                out.add(s)
+        return out
+
+    def snapshot(self) -> dict:
+        dfrom, dto = self.due_range()
+        return {
+            "statuses": sorted(self.status_allowed() or []),
+            "priority_min": self.priority_range()[0],
+            "priority_max": self.priority_range()[1],
+            "due_enabled": self.chk_due_range.isChecked(),
+            "due_from": dfrom.isoformat() if dfrom else None,
+            "due_to": dto.isoformat() if dto else None,
+            "hide_done": self.hide_done(),
+            "overdue_only": self.overdue_only(),
+            "blocked_only": self.blocked_only(),
+            "waiting_only": self.waiting_only(),
+            "show_children_of_matches": self.show_children_of_matches(),
+            "tags": sorted(self.tag_filter()),
+        }
+
+    def apply_snapshot(self, state: dict):
+        data = state or {}
+        statuses = set(data.get("statuses") or [])
+        if statuses:
+            self.chk_all_status.blockSignals(True)
+            self.chk_all_status.setChecked(False)
+            self.chk_all_status.blockSignals(False)
+            for cb in self.status_checks:
+                cb.blockSignals(True)
+                cb.setChecked(cb.text() in statuses)
+                cb.blockSignals(False)
+        else:
+            self.chk_all_status.setChecked(True)
+
+        pmin = data.get("priority_min")
+        pmax = data.get("priority_max")
+        self.prio_min.setValue(int(pmin) if pmin is not None else 1)
+        self.prio_max.setValue(int(pmax) if pmax is not None else 5)
+
+        due_enabled = bool(data.get("due_enabled", False))
+        self.chk_due_range.setChecked(due_enabled)
+        due_from = data.get("due_from")
+        due_to = data.get("due_to")
+        if due_from:
+            qd = QDate.fromString(str(due_from), "yyyy-MM-dd")
+            if qd.isValid():
+                self.due_from.setDate(qd)
+        if due_to:
+            qd = QDate.fromString(str(due_to), "yyyy-MM-dd")
+            if qd.isValid():
+                self.due_to.setDate(qd)
+
+        self.chk_hide_done.setChecked(bool(data.get("hide_done", False)))
+        self.chk_overdue_only.setChecked(bool(data.get("overdue_only", False)))
+        self.chk_blocked_only.setChecked(bool(data.get("blocked_only", False)))
+        self.chk_waiting_only.setChecked(bool(data.get("waiting_only", False)))
+        self.chk_show_children.setChecked(bool(data.get("show_children_of_matches", True)))
+
+        tags = data.get("tags") or []
+        if isinstance(tags, list):
+            self.tags_input.setText(", ".join(str(t) for t in tags if str(t).strip()))
+        else:
+            self.tags_input.setText("")
+
     # ---------- Reset ----------
     def reset(self):
         self.chk_all_status.setChecked(True)
@@ -181,6 +290,9 @@ class FilterPanel(QWidget):
 
         self.chk_hide_done.setChecked(False)
         self.chk_overdue_only.setChecked(False)
+        self.chk_blocked_only.setChecked(False)
+        self.chk_waiting_only.setChecked(False)
         self.chk_show_children.setChecked(True)
+        self.tags_input.setText("")
 
         self.changed.emit()

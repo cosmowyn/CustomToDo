@@ -13,7 +13,8 @@ from PySide6.QtWidgets import QFileDialog, QMessageBox, QWidget
 from db import Database, now_iso
 
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
+SUPPORTED_FORMAT_VERSIONS = {1, 2}
 ALLOWED_COL_TYPES = {"text", "int", "date", "bool", "list"}
 
 
@@ -130,7 +131,12 @@ def export_payload(db: Database) -> dict:
     cur.execute(
         """
         SELECT id, description, due_date, last_update, priority, status,
-               parent_id, sort_order, is_collapsed
+               parent_id, sort_order, is_collapsed,
+               notes, archived_at, planned_bucket,
+               effort_minutes, actual_minutes, timer_started_at,
+               waiting_for,
+               recurrence_rule_id, recurrence_origin_task_id, is_generated_occurrence,
+               reminder_at, reminder_minutes_before, reminder_fired_at
         FROM tasks
         ORDER BY COALESCE(parent_id, 0), sort_order ASC, id ASC;
         """
@@ -152,6 +158,80 @@ def export_payload(db: Database) -> dict:
     for t in tasks:
         t["custom"] = values_by_task.get(int(t["id"]), {})
 
+    cur.execute(
+        """
+        SELECT tt.task_id, tg.name
+        FROM task_tags tt
+        JOIN tags tg ON tg.id=tt.tag_id
+        ORDER BY tt.task_id, LOWER(tg.name), tg.name;
+        """
+    )
+    tags_by_task: dict[int, list[str]] = {}
+    for r in cur.fetchall():
+        tags_by_task.setdefault(int(r["task_id"]), []).append(str(r["name"]))
+
+    cur.execute(
+        """
+        SELECT id, task_id, path, label, created_at
+        FROM task_attachments
+        ORDER BY task_id, id;
+        """
+    )
+    attachments_by_task: dict[int, list[dict]] = {}
+    for r in cur.fetchall():
+        attachments_by_task.setdefault(int(r["task_id"]), []).append(
+            {
+                "id": int(r["id"]),
+                "path": str(r["path"]),
+                "label": str(r["label"] or ""),
+                "created_at": str(r["created_at"] or now_iso()),
+            }
+        )
+
+    cur.execute(
+        """
+        SELECT task_id, depends_on_task_id
+        FROM task_dependencies
+        ORDER BY task_id, depends_on_task_id;
+        """
+    )
+    deps_by_task: dict[int, list[int]] = {}
+    for r in cur.fetchall():
+        deps_by_task.setdefault(int(r["task_id"]), []).append(int(r["depends_on_task_id"]))
+
+    for t in tasks:
+        tid = int(t["id"])
+        t["tags"] = tags_by_task.get(tid, [])
+        t["attachments"] = attachments_by_task.get(tid, [])
+        t["dependencies"] = deps_by_task.get(tid, [])
+
+    cur.execute(
+        """
+        SELECT id, task_id, frequency, create_next_on_done, is_active, created_at, updated_at
+        FROM recurrence_rules
+        ORDER BY id;
+        """
+    )
+    recurrence_rules = [dict(r) for r in cur.fetchall()]
+
+    cur.execute(
+        """
+        SELECT id, name, state_json, created_at, updated_at
+        FROM saved_filter_views
+        ORDER BY LOWER(name), name;
+        """
+    )
+    saved_filter_views = [dict(r) for r in cur.fetchall()]
+
+    cur.execute(
+        """
+        SELECT id, name, payload_json, created_at, updated_at
+        FROM task_templates
+        ORDER BY LOWER(name), name;
+        """
+    )
+    templates = [dict(r) for r in cur.fetchall()]
+
     payload_wo_checksum = {
         "format_version": FORMAT_VERSION,
         "exported_at": now_iso(),
@@ -166,6 +246,9 @@ def export_payload(db: Database) -> dict:
             for c in cols
         ],
         "tasks": tasks,
+        "recurrence_rules": recurrence_rules,
+        "saved_filter_views": saved_filter_views,
+        "templates": templates,
     }
 
     checksum = _sha256_canonical_json(payload_wo_checksum)
@@ -260,6 +343,9 @@ def import_payload(parent: QWidget, payload: dict, target_db: Database) -> Impor
 
     src_cols = payload["custom_columns"]
     src_tasks = payload["tasks"]
+    src_recurrence = payload.get("recurrence_rules") or []
+    src_saved_views = payload.get("saved_filter_views") or []
+    src_templates = payload.get("templates") or []
 
     tgt_cols = _get_target_columns(target_db)
     tgt_col_names = set(tgt_cols.keys())
@@ -316,7 +402,14 @@ def import_payload(parent: QWidget, payload: dict, target_db: Database) -> Impor
 
             if mode == "replace":
                 cur.execute("DELETE FROM task_custom_values;")
+                cur.execute("DELETE FROM task_tags;")
+                cur.execute("DELETE FROM task_attachments;")
+                cur.execute("DELETE FROM task_dependencies;")
+                cur.execute("DELETE FROM recurrence_rules;")
+                cur.execute("DELETE FROM tags;")
                 cur.execute("DELETE FROM tasks;")
+                cur.execute("DELETE FROM saved_filter_views;")
+                cur.execute("DELETE FROM task_templates;")
 
             if allowed_missing and create_missing:
                 for c in allowed_missing:
@@ -378,11 +471,16 @@ def import_payload(parent: QWidget, payload: dict, target_db: Database) -> Impor
                         (int(col_id), v, next_order),
                     )
 
+            task_id_map: dict[int, int] = {}
             if mode == "replace":
-                _import_tasks_keep_ids(cur, src_tasks, tgt_cols, report)
+                _import_tasks_keep_ids(cur, src_tasks, tgt_cols, report, task_id_map)
             else:
-                task_id_map = {}
                 _import_tasks_merge(cur, src_tasks, tgt_cols, report, task_id_map)
+
+            _import_task_extras(cur, src_tasks, task_id_map)
+            _import_recurrence(cur, src_recurrence, src_tasks, task_id_map)
+            _import_saved_filter_views(cur, src_saved_views)
+            _import_templates(cur, src_templates)
 
     except Exception as e:
         raise BackupError(_format_exception_message("Import transaction failed", e))
@@ -390,7 +488,39 @@ def import_payload(parent: QWidget, payload: dict, target_db: Database) -> Impor
     return report
 
 
-def _import_tasks_keep_ids(cur, src_tasks: list[dict], tgt_cols: dict, report: ImportReport) -> None:
+def _task_insert_values(t: dict, parent_id, sort_order: int):
+    return (
+        t.get("description", ""),
+        t.get("due_date"),
+        t.get("last_update") or now_iso(),
+        int(t.get("priority", 3)),
+        t.get("status", "Todo"),
+        parent_id,
+        int(sort_order),
+        int(t.get("is_collapsed", 0)),
+        str(t.get("notes") or ""),
+        t.get("archived_at"),
+        str(t.get("planned_bucket") or "inbox"),
+        t.get("effort_minutes"),
+        int(t.get("actual_minutes", 0) or 0),
+        t.get("timer_started_at"),
+        t.get("waiting_for"),
+        None,  # recurrence_rule_id remapped in a dedicated pass
+        None,  # recurrence_origin_task_id remapped in a dedicated pass
+        int(t.get("is_generated_occurrence", 0) or 0),
+        t.get("reminder_at"),
+        t.get("reminder_minutes_before"),
+        t.get("reminder_fired_at"),
+    )
+
+
+def _import_tasks_keep_ids(
+    cur,
+    src_tasks: list[dict],
+    tgt_cols: dict,
+    report: ImportReport,
+    id_map: dict[int, int],
+) -> None:
     pending = {int(t["id"]): t for t in src_tasks if "id" in t}
     inserted = set()
 
@@ -410,24 +540,20 @@ def _import_tasks_keep_ids(cur, src_tasks: list[dict], tgt_cols: dict, report: I
                 cur.execute(
                     """
                     INSERT INTO tasks(id, description, due_date, last_update, priority, status,
-                                      parent_id, sort_order, is_collapsed)
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?);
+                                      parent_id, sort_order, is_collapsed,
+                                      notes, archived_at, planned_bucket,
+                                      effort_minutes, actual_minutes, timer_started_at,
+                                      waiting_for,
+                                      recurrence_rule_id, recurrence_origin_task_id, is_generated_occurrence,
+                                      reminder_at, reminder_minutes_before, reminder_fired_at)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
-                    (
-                        tid,
-                        t.get("description", ""),
-                        t.get("due_date"),
-                        t.get("last_update") or now_iso(),
-                        int(t.get("priority", 3)),
-                        t.get("status", "Todo"),
-                        parent_id,
-                        int(t.get("sort_order", 1)),
-                        int(t.get("is_collapsed", 0)),
-                    ),
+                    (tid, *_task_insert_values(t, parent_id, int(t.get("sort_order", 1)))),
                 )
 
                 report.imported_tasks += 1
                 inserted.add(tid)
+                id_map[tid] = tid
                 _insert_custom_values(cur, tid, t.get("custom", {}), tgt_cols, report)
 
                 pending.pop(tid, None)
@@ -438,23 +564,19 @@ def _import_tasks_keep_ids(cur, src_tasks: list[dict], tgt_cols: dict, report: I
                 cur.execute(
                     """
                     INSERT INTO tasks(id, description, due_date, last_update, priority, status,
-                                      parent_id, sort_order, is_collapsed)
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?);
+                                      parent_id, sort_order, is_collapsed,
+                                      notes, archived_at, planned_bucket,
+                                      effort_minutes, actual_minutes, timer_started_at,
+                                      waiting_for,
+                                      recurrence_rule_id, recurrence_origin_task_id, is_generated_occurrence,
+                                      reminder_at, reminder_minutes_before, reminder_fired_at)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
-                    (
-                        tid,
-                        t.get("description", ""),
-                        t.get("due_date"),
-                        t.get("last_update") or now_iso(),
-                        int(t.get("priority", 3)),
-                        t.get("status", "Todo"),
-                        None,
-                        int(t.get("sort_order", 1)),
-                        int(t.get("is_collapsed", 0)),
-                    ),
+                    (tid, *_task_insert_values(t, None, int(t.get("sort_order", 1)))),
                 )
                 report.imported_tasks += 1
                 inserted.add(tid)
+                id_map[tid] = tid
                 _insert_custom_values(cur, tid, t.get("custom", {}), tgt_cols, report)
                 pending.pop(tid, None)
 
@@ -502,19 +624,15 @@ def _import_tasks_merge(cur, src_tasks: list[dict], tgt_cols: dict, report: Impo
             cur.execute(
                 """
                 INSERT INTO tasks(description, due_date, last_update, priority, status,
-                                  parent_id, sort_order, is_collapsed)
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?);
+                                  parent_id, sort_order, is_collapsed,
+                                  notes, archived_at, planned_bucket,
+                                  effort_minutes, actual_minutes, timer_started_at,
+                                  waiting_for,
+                                  recurrence_rule_id, recurrence_origin_task_id, is_generated_occurrence,
+                                  reminder_at, reminder_minutes_before, reminder_fired_at)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
-                (
-                    t.get("description", ""),
-                    t.get("due_date"),
-                    t.get("last_update") or now_iso(),
-                    int(t.get("priority", 3)),
-                    t.get("status", "Todo"),
-                    new_parent,
-                    sort_order,
-                    int(t.get("is_collapsed", 0)),
-                ),
+                _task_insert_values(t, new_parent, sort_order),
             )
             new_id = int(cur.lastrowid)
             id_map[old_id] = new_id
@@ -530,19 +648,15 @@ def _import_tasks_merge(cur, src_tasks: list[dict], tgt_cols: dict, report: Impo
                 cur.execute(
                     """
                     INSERT INTO tasks(description, due_date, last_update, priority, status,
-                                      parent_id, sort_order, is_collapsed)
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?);
+                                      parent_id, sort_order, is_collapsed,
+                                      notes, archived_at, planned_bucket,
+                                      effort_minutes, actual_minutes, timer_started_at,
+                                      waiting_for,
+                                      recurrence_rule_id, recurrence_origin_task_id, is_generated_occurrence,
+                                      reminder_at, reminder_minutes_before, reminder_fired_at)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
-                    (
-                        t.get("description", ""),
-                        t.get("due_date"),
-                        t.get("last_update") or now_iso(),
-                        int(t.get("priority", 3)),
-                        t.get("status", "Todo"),
-                        None,
-                        int(t.get("sort_order", 1)),
-                        int(t.get("is_collapsed", 0)),
-                    ),
+                    _task_insert_values(t, None, int(t.get("sort_order", 1))),
                 )
                 new_id = int(cur.lastrowid)
                 id_map[old_id] = new_id
@@ -551,6 +665,232 @@ def _import_tasks_merge(cur, src_tasks: list[dict], tgt_cols: dict, report: Impo
                 _insert_custom_values(cur, new_id, t.get("custom", {}), tgt_cols, report)
 
                 pending.pop(old_id, None)
+
+
+def _ensure_tag_id(cur, tag_name: str) -> int:
+    cur.execute("SELECT id FROM tags WHERE name=? COLLATE NOCASE;", (str(tag_name).strip(),))
+    row = cur.fetchone()
+    if row:
+        return int(row["id"])
+    cur.execute("INSERT INTO tags(name, created_at) VALUES(?, ?);", (str(tag_name).strip(), now_iso()))
+    return int(cur.lastrowid)
+
+
+def _import_task_extras(cur, src_tasks: list[dict], id_map: dict[int, int]) -> None:
+    for t in src_tasks:
+        try:
+            old_tid = int(t["id"])
+        except Exception:
+            continue
+        new_tid = id_map.get(old_tid)
+        if not new_tid:
+            continue
+
+        # Tags
+        tags = t.get("tags") or []
+        if isinstance(tags, list):
+            for tag in tags:
+                name = str(tag).strip()
+                if not name:
+                    continue
+                tag_id = _ensure_tag_id(cur, name)
+                cur.execute(
+                    """
+                    INSERT INTO task_tags(task_id, tag_id)
+                    VALUES(?, ?)
+                    ON CONFLICT(task_id, tag_id) DO NOTHING;
+                    """,
+                    (int(new_tid), int(tag_id)),
+                )
+
+        # Attachments (portable links)
+        atts = t.get("attachments") or []
+        if isinstance(atts, list):
+            for att in atts:
+                if not isinstance(att, dict):
+                    continue
+                path = str(att.get("path") or "").strip()
+                if not path:
+                    continue
+                cur.execute(
+                    """
+                    INSERT INTO task_attachments(task_id, path, label, created_at)
+                    VALUES(?, ?, ?, ?);
+                    """,
+                    (
+                        int(new_tid),
+                        path,
+                        str(att.get("label") or ""),
+                        str(att.get("created_at") or now_iso()),
+                    ),
+                )
+
+    # Dependencies are applied in a second pass so all task ids are known.
+    for t in src_tasks:
+        try:
+            old_tid = int(t["id"])
+        except Exception:
+            continue
+        new_tid = id_map.get(old_tid)
+        if not new_tid:
+            continue
+        deps = t.get("dependencies") or []
+        if not isinstance(deps, list):
+            continue
+        for dep_old in deps:
+            try:
+                dep_old_id = int(dep_old)
+            except Exception:
+                continue
+            dep_new = id_map.get(dep_old_id)
+            if not dep_new or dep_new == new_tid:
+                continue
+            cur.execute(
+                """
+                INSERT INTO task_dependencies(task_id, depends_on_task_id)
+                VALUES(?, ?)
+                ON CONFLICT(task_id, depends_on_task_id) DO NOTHING;
+                """,
+                (int(new_tid), int(dep_new)),
+            )
+
+
+def _import_recurrence(cur, src_recurrence: list[dict], src_tasks: list[dict], id_map: dict[int, int]) -> None:
+    rr_id_map: dict[int, int] = {}
+
+    for rr in src_recurrence:
+        if not isinstance(rr, dict):
+            continue
+        try:
+            old_rule_id = int(rr.get("id"))
+            old_task_id = int(rr.get("task_id"))
+        except Exception:
+            continue
+        new_task_id = id_map.get(old_task_id)
+        if not new_task_id:
+            continue
+        freq = str(rr.get("frequency") or "").strip().lower()
+        if freq not in {"daily", "weekly", "monthly", "yearly"}:
+            continue
+        cur.execute(
+            """
+            INSERT INTO recurrence_rules(task_id, frequency, create_next_on_done, is_active, created_at, updated_at)
+            VALUES(?, ?, ?, ?, ?, ?);
+            """,
+            (
+                int(new_task_id),
+                freq,
+                int(rr.get("create_next_on_done", 1)),
+                int(rr.get("is_active", 1)),
+                str(rr.get("created_at") or now_iso()),
+                str(rr.get("updated_at") or now_iso()),
+            ),
+        )
+        rr_id_map[old_rule_id] = int(cur.lastrowid)
+
+    for t in src_tasks:
+        if not isinstance(t, dict):
+            continue
+        try:
+            old_tid = int(t["id"])
+        except Exception:
+            continue
+        new_tid = id_map.get(old_tid)
+        if not new_tid:
+            continue
+
+        old_rr = t.get("recurrence_rule_id")
+        old_origin = t.get("recurrence_origin_task_id")
+        new_rr = None
+        new_origin = None
+        try:
+            if old_rr is not None:
+                new_rr = rr_id_map.get(int(old_rr))
+        except Exception:
+            new_rr = None
+        try:
+            if old_origin is not None:
+                new_origin = id_map.get(int(old_origin))
+        except Exception:
+            new_origin = None
+
+        cur.execute(
+            """
+            UPDATE tasks
+            SET recurrence_rule_id=?, recurrence_origin_task_id=?, is_generated_occurrence=?
+            WHERE id=?;
+            """,
+            (
+                new_rr,
+                new_origin,
+                int(t.get("is_generated_occurrence", 0) or 0),
+                int(new_tid),
+            ),
+        )
+
+
+def _import_saved_filter_views(cur, saved_views: list[dict]) -> None:
+    for sv in saved_views:
+        if not isinstance(sv, dict):
+            continue
+        name = str(sv.get("name") or "").strip()
+        if not name:
+            continue
+        state_json = sv.get("state_json")
+        if state_json is None and "state" in sv:
+            try:
+                state_json = json.dumps(sv.get("state") or {}, ensure_ascii=False)
+            except Exception:
+                state_json = "{}"
+        if state_json is None:
+            state_json = "{}"
+        cur.execute(
+            """
+            INSERT INTO saved_filter_views(name, state_json, created_at, updated_at)
+            VALUES(?, ?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                state_json=excluded.state_json,
+                updated_at=excluded.updated_at;
+            """,
+            (
+                name,
+                str(state_json),
+                str(sv.get("created_at") or now_iso()),
+                str(sv.get("updated_at") or now_iso()),
+            ),
+        )
+
+
+def _import_templates(cur, templates: list[dict]) -> None:
+    for tp in templates:
+        if not isinstance(tp, dict):
+            continue
+        name = str(tp.get("name") or "").strip()
+        if not name:
+            continue
+        payload_json = tp.get("payload_json")
+        if payload_json is None and "payload" in tp:
+            try:
+                payload_json = json.dumps(tp.get("payload") or {}, ensure_ascii=False)
+            except Exception:
+                payload_json = "{}"
+        if payload_json is None:
+            payload_json = "{}"
+        cur.execute(
+            """
+            INSERT INTO task_templates(name, payload_json, created_at, updated_at)
+            VALUES(?, ?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                payload_json=excluded.payload_json,
+                updated_at=excluded.updated_at;
+            """,
+            (
+                name,
+                str(payload_json),
+                str(tp.get("created_at") or now_iso()),
+                str(tp.get("updated_at") or now_iso()),
+            ),
+        )
 
 
 def _insert_custom_values(cur, task_id: int, custom: dict, tgt_cols: dict, report: ImportReport) -> None:
@@ -631,7 +971,8 @@ def _validate_payload_shape(payload: dict) -> None:
     if not isinstance(payload, dict):
         raise BackupError("Backup payload is not a JSON object.")
 
-    if int(payload.get("format_version", -1)) != FORMAT_VERSION:
+    fmt = int(payload.get("format_version", -1))
+    if fmt not in SUPPORTED_FORMAT_VERSIONS:
         raise BackupError(f"Unsupported backup format_version: {payload.get('format_version')}")
 
     if "custom_columns" not in payload or not isinstance(payload["custom_columns"], list):
@@ -661,6 +1002,21 @@ def _validate_payload_shape(payload: dict) -> None:
             raise BackupError("Task missing 'id' in backup.")
         if "custom" in t and t["custom"] is not None and not isinstance(t["custom"], dict):
             raise BackupError("Task 'custom' must be an object if present.")
+        if "tags" in t and t["tags"] is not None and not isinstance(t["tags"], list):
+            raise BackupError("Task 'tags' must be a list if present.")
+        if "attachments" in t and t["attachments"] is not None and not isinstance(t["attachments"], list):
+            raise BackupError("Task 'attachments' must be a list if present.")
+        if "dependencies" in t and t["dependencies"] is not None and not isinstance(t["dependencies"], list):
+            raise BackupError("Task 'dependencies' must be a list if present.")
+
+    if "saved_filter_views" in payload and not isinstance(payload["saved_filter_views"], list):
+        raise BackupError("Backup field 'saved_filter_views' must be a list if present.")
+
+    if "templates" in payload and not isinstance(payload["templates"], list):
+        raise BackupError("Backup field 'templates' must be a list if present.")
+
+    if "recurrence_rules" in payload and not isinstance(payload["recurrence_rules"], list):
+        raise BackupError("Backup field 'recurrence_rules' must be a list if present.")
 
 
 def _sha256_canonical_json(obj: dict) -> str:

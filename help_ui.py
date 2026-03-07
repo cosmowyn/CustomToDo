@@ -1,0 +1,759 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QTextDocument
+from PySide6.QtWidgets import (
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QPushButton,
+    QSplitter,
+    QTextBrowser,
+    QVBoxLayout,
+)
+
+
+@dataclass
+class HelpChapter:
+    anchor: str
+    title: str
+    keywords: list[str]
+    body_html: str
+
+
+HELP_CHAPTERS: list[HelpChapter] = [
+    HelpChapter(
+        anchor="overview",
+        title="Overview",
+        keywords=[
+            "overview",
+            "workflow",
+            "tree",
+            "details",
+            "calendar",
+            "review",
+            "analytics",
+            "command palette",
+        ],
+        body_html="""
+        <p><strong>CustomTaskManager</strong> is a hierarchical task manager focused on fast daily execution and clear review workflows.</p>
+        <ul>
+            <li>The <strong>task tree</strong> remains the central workspace for planning, editing, and reordering work.</li>
+            <li><strong>Quick add</strong> captures tasks quickly with natural date and priority parsing.</li>
+            <li><strong>Search, filters, saved views, and perspectives</strong> let you move between planning contexts quickly.</li>
+            <li><strong>Details, calendar, review, undo history, and analytics docks</strong> add depth without replacing the main tree workflow.</li>
+            <li><strong>Templates, recurrence, reminders, tags, attachments, backups, themes, and archive restore</strong> are integrated into the same database-backed workflow.</li>
+        </ul>
+        <p>Use the tree for immediate work, the details panel for deeper metadata, the command palette for fast keyboard actions, the review workflow for weekly cleanup, and analytics for lightweight trust-building metrics.</p>
+        """,
+    ),
+    HelpChapter(
+        anchor="task-tree",
+        title="Task Tree Basics",
+        keywords=[
+            "tree",
+            "parent",
+            "child",
+            "gutter",
+            "manual order",
+            "progress",
+            "multi-select",
+            "nesting",
+        ],
+        body_html="""
+        <p>The tree is the main task editor.</p>
+        <ul>
+            <li><strong>Add task</strong> creates a top-level task.</li>
+            <li><strong>Add child task</strong> creates a nested task under the selected row.</li>
+            <li><strong>Row gutter buttons</strong> stay visible to the left of the tree:
+                <ul>
+                    <li><code>+</code> adds a child to the focused row</li>
+                    <li><code>-</code> archives the focused row</li>
+                </ul>
+            </li>
+            <li><strong>Manual order mode</strong> supports drag/drop reordering while preserving hierarchy.</li>
+            <li><strong>Alternative sort modes</strong> show due-date, priority, or status order without destroying the saved manual order.</li>
+            <li><strong>Multi-selection</strong> supports bulk changes, archive, and delete workflows.</li>
+            <li><strong>Parent progress</strong> rolls child completion up as done/total and percentage.</li>
+            <li>When a parent reaches <strong>100% child completion</strong>, it is automatically marked <strong>Done</strong>.</li>
+            <li>Nested hierarchy depth is limited to <strong>10 levels</strong> per task chain to prevent runaway indentation.</li>
+        </ul>
+        <p>If drag/drop or manual movement is unavailable, check whether a filter or non-manual sort mode is active.</p>
+        """,
+    ),
+    HelpChapter(
+        anchor="quick-add",
+        title="Quick Add Syntax",
+        keywords=[
+            "quick add",
+            "natural language",
+            "today",
+            "tomorrow",
+            "tonight",
+            "day after tomorrow",
+            "next monday",
+            "this monday",
+            "next week",
+            "next month",
+            "next year",
+            "in 3 days",
+            "weekday",
+            "p1",
+            "high",
+            "medium",
+            "low",
+        ],
+        body_html="""
+        <p>The Quick add bar is designed for rapid capture. Type one line, press Enter, and keep going.</p>
+        <p><strong>Recognized due-date patterns</strong>:</p>
+        <ul>
+            <li>Natural words: <code>today</code>, <code>tonight</code>, <code>tomorrow</code>, <code>day after tomorrow</code></li>
+            <li>Relative weekdays: <code>monday</code>, <code>friday</code>, <code>this monday</code>, <code>next monday</code></li>
+            <li>Relative periods: <code>next week</code>, <code>next month</code>, <code>next year</code></li>
+            <li>Offsets: <code>in 3 days</code>, <code>in 2 weeks</code>, <code>in 1 month</code>, <code>in 1 year</code></li>
+            <li>Explicit dates: <code>2026-03-12</code> and <code>12-Mar-2026</code></li>
+        </ul>
+        <p><strong>Recognized priority patterns</strong>:</p>
+        <ul>
+            <li><code>p1</code> to <code>p5</code></li>
+            <li><code>high</code>, <code>medium</code>, <code>low</code></li>
+        </ul>
+        <p><strong>Examples</strong>:</p>
+        <ul>
+            <li><code>Call supplier tomorrow p1</code></li>
+            <li><code>Finish report 12-Mar-2026 high</code></li>
+            <li><code>Review budget next monday</code></li>
+            <li><code>Book venue in 2 weeks low</code></li>
+            <li><code>Draft roadmap next month medium</code></li>
+        </ul>
+        <p>If parsing fails, the raw text still becomes the task description so capture never blocks on syntax.</p>
+        """,
+    ),
+    HelpChapter(
+        anchor="search",
+        title="Search and Filter Syntax",
+        keywords=[
+            "search",
+            "filter",
+            "saved views",
+            "status",
+            "priority",
+            "due",
+            "tag",
+            "has:children",
+            "blocked",
+            "waiting",
+        ],
+        body_html="""
+        <p>The search bar supports free text and structured operators in the same query.</p>
+        <p><strong>Supported operators</strong>:</p>
+        <ul>
+            <li><code>status:todo</code>, <code>status:in progress</code>, <code>status:blocked</code>, <code>status:done</code></li>
+            <li><code>priority:1</code></li>
+            <li><code>due&lt;today</code>, <code>due&lt;=2026-03-12</code>, <code>due&gt;=12-Mar-2026</code></li>
+            <li><code>tag:work</code></li>
+            <li><code>has:children</code>, <code>has:nochildren</code></li>
+            <li><code>blocked:true</code> or <code>is:blocked</code></li>
+            <li><code>waiting:true</code> or <code>is:waiting</code></li>
+        </ul>
+        <p>Free text remains active and is combined with the operators above. The Filters dock can then narrow results further by status, priority range, due-date filters, tags, hide-done, overdue-only, blocked-only, and waiting-only settings.</p>
+        <p>Saved filter views store the current filter/search state so you can return to frequently used working contexts with one action or one command-palette search.</p>
+        """,
+    ),
+    HelpChapter(
+        anchor="command-palette",
+        title="Command Palette",
+        keywords=[
+            "command palette",
+            "ctrl+shift+p",
+            "commands",
+            "keyboard-first",
+            "saved view",
+            "template",
+            "backup",
+            "theme",
+        ],
+        body_html="""
+        <p>Open the command palette with <code>Ctrl+Shift+P</code> to run actions without leaving the keyboard.</p>
+        <ul>
+            <li>Type part of a command title, alias, or keyword to filter the list.</li>
+            <li>Press <strong>Enter</strong> to run the selected command.</li>
+            <li>Commands include add task, add child, duplicate, archive, delete, open details, change status, change priority, apply saved views, jump to perspectives, insert templates, focus search or quick add, and open backup/theme import-export actions.</li>
+            <li>The command list is extensible and includes dynamic entries such as saved views and saved templates.</li>
+        </ul>
+        <p>Use the palette when you know what you want to do but do not want to hunt through menus.</p>
+        """,
+    ),
+    HelpChapter(
+        anchor="views",
+        title="Perspectives, Saved Views, and Sort Modes",
+        keywords=[
+            "today",
+            "upcoming",
+            "inbox",
+            "someday",
+            "completed",
+            "archive",
+            "saved view",
+            "sort",
+        ],
+        body_html="""
+        <p><strong>Built-in perspectives</strong> change the planning lens without changing the underlying data:</p>
+        <ul>
+            <li><strong>All</strong>: active non-archived tasks.</li>
+            <li><strong>Today</strong>: tasks due today or bucketed into Today.</li>
+            <li><strong>Upcoming</strong>: future-due tasks and Upcoming-bucket items.</li>
+            <li><strong>Inbox</strong>: unprocessed tasks not yet planned.</li>
+            <li><strong>Someday</strong>: deferred or non-active planned items.</li>
+            <li><strong>Completed / Archive</strong>: done and archived content for cleanup or restoration.</li>
+        </ul>
+        <p><strong>Saved views</strong> persist the current search text and filter state so you can reload a named working context later.</p>
+        <p><strong>Sort modes</strong>:</p>
+        <ul>
+            <li><strong>Manual order</strong> keeps drag/drop ordering persistent.</li>
+            <li><strong>Due date</strong>, <strong>Priority</strong>, and <strong>Status</strong> provide temporary analytical sorting without overwriting the manual order data.</li>
+        </ul>
+        """,
+    ),
+    HelpChapter(
+        anchor="details",
+        title="Details Panel",
+        keywords=[
+            "details",
+            "notes",
+            "tags",
+            "bucket",
+            "dependencies",
+            "waiting",
+            "recurrence",
+            "effort",
+            "timer",
+            "reminder",
+            "attachments",
+            "project summary",
+        ],
+        body_html="""
+        <p>The Details panel follows the current selection and is the main place to edit task metadata beyond the visible tree columns.</p>
+        <ul>
+            <li><strong>Notes</strong>: long-form text with scrollbars for larger content.</li>
+            <li><strong>Tags</strong>: lightweight labels stored in normalized tables for filtering and search.</li>
+            <li><strong>Bucket</strong>: Inbox, Today, Upcoming, or Someday planning classification.</li>
+            <li><strong>Waiting</strong>: free-form waiting context such as a person, handoff, or external dependency note.</li>
+            <li><strong>Blocked by IDs</strong>: task IDs that must complete before this task becomes actionable.</li>
+            <li><strong>Recurrence</strong>: frequency plus "create next occurrence when done".</li>
+            <li><strong>Estimated and actual minutes</strong>: lightweight effort planning and time tracking.</li>
+            <li><strong>Reminder controls</strong>: direct reminder timestamp, due-date-based reminder, or clear reminder.</li>
+            <li><strong>Attachments</strong>: attach files or folders, open them, and remove links.</li>
+        </ul>
+        <p>The summary label at the top also shows status, priority, child progress, recurrence state, and project intelligence such as next action, blocked state, or stalled state when relevant.</p>
+        """,
+    ),
+    HelpChapter(
+        anchor="custom-columns",
+        title="Custom Columns and Cell Editors",
+        keywords=[
+            "custom column",
+            "columns",
+            "date column",
+            "list column",
+            "calendar picker",
+            "clear date",
+            "list values",
+        ],
+        body_html="""
+        <p>Use the <strong>Columns</strong> menu to add, remove, show, or hide task columns.</p>
+        <p><strong>Supported custom column types</strong>:</p>
+        <ul>
+            <li><strong>text</strong>: free-form text</li>
+            <li><strong>int</strong>: numeric editor</li>
+            <li><strong>date</strong>: calendar date picker with clear button</li>
+            <li><strong>bool</strong>: Yes/No selector</li>
+            <li><strong>list</strong>: editable combo list with reusable values</li>
+        </ul>
+        <p><strong>Date and datetime editors</strong>:</p>
+        <ul>
+            <li>If a cell already has a value, the popup opens on that stored date.</li>
+            <li>If a cell is empty, the popup defaults to <strong>today</strong> instead of a legacy zero date.</li>
+            <li>The clear button removes the stored value completely.</li>
+        </ul>
+        <p><strong>List columns</strong>:</p>
+        <ul>
+            <li>Seed values can be defined when the column is created.</li>
+            <li>Cells show a dropdown but remain editable.</li>
+            <li>If you type a new value that is not already in the list, it is accepted and appended to that column's reusable values.</li>
+        </ul>
+        <p>The default task table also includes an optional <strong>Reminder</strong> datetime column for direct scheduling from the tree.</p>
+        """,
+    ),
+    HelpChapter(
+        anchor="review",
+        title="Review Workflow",
+        keywords=[
+            "review",
+            "weekly review",
+            "overdue",
+            "stalled",
+            "waiting older",
+            "archive roots",
+            "cleanup",
+        ],
+        body_html="""
+        <p>The Review Workflow dock is a guided maintenance workspace rather than just another filter.</p>
+        <p><strong>Built-in review categories</strong>:</p>
+        <ul>
+            <li>Overdue</li>
+            <li>No Due Date</li>
+            <li>Inbox Unprocessed</li>
+            <li>Stalled Projects</li>
+            <li>Projects: No Next Action</li>
+            <li>Projects: Blocked</li>
+            <li>Waiting Older</li>
+            <li>Recurring Attention</li>
+            <li>Recent Done/Archived</li>
+            <li>Archive Roots</li>
+        </ul>
+        <p><strong>Workflow controls</strong>:</p>
+        <ul>
+            <li>Adjust thresholds for waiting age, stalled threshold, and recent window.</li>
+            <li>Double-click a row to focus it in the main tree.</li>
+            <li>Use the action buttons to focus, mark done, archive, or restore directly from the review dock.</li>
+        </ul>
+        <p>This dock is intended for weekly review, daily cleanup, and restoring trust in the system when your task list gets noisy.</p>
+        """,
+    ),
+    HelpChapter(
+        anchor="projects",
+        title="Projects and Next Actions",
+        keywords=[
+            "project",
+            "next action",
+            "blocked",
+            "stalled",
+            "child progress",
+            "parent",
+        ],
+        body_html="""
+        <p>Any task with active children behaves like a project or parent item.</p>
+        <ul>
+            <li>The app evaluates active children to find the <strong>next actionable child</strong>.</li>
+            <li>A project can be marked as <strong>blocked</strong> when the remaining open children are waiting or dependency-blocked.</li>
+            <li>A project can be marked as <strong>stalled</strong> when it has gone too long without useful forward movement.</li>
+            <li>A project can be flagged as having <strong>no next action</strong> when it still has open work but nothing clearly actionable.</li>
+            <li>Child completion rolls up to the parent progress column and summary metadata.</li>
+        </ul>
+        <p>These signals are surfaced in the details summary and the review workflow, but they do not remove manual control over task structure or status.</p>
+        """,
+    ),
+    HelpChapter(
+        anchor="recurrence",
+        title="Recurring Tasks",
+        keywords=["recurrence", "daily", "weekly", "monthly", "yearly", "next occurrence"],
+        body_html="""
+        <p>Recurrence is rule-based and stored separately from generated task instances.</p>
+        <ul>
+            <li>Frequencies: <strong>daily</strong>, <strong>weekly</strong>, <strong>monthly</strong>, and <strong>yearly</strong>.</li>
+            <li>Enable <strong>create next occurrence when done</strong> to generate the next task after completion.</li>
+            <li>Generated tasks remain editable without corrupting the source recurrence rule.</li>
+            <li>Review mode includes a recurring-attention category for recurrence items that deserve inspection.</li>
+        </ul>
+        """,
+    ),
+    HelpChapter(
+        anchor="templates",
+        title="Templates and Placeholders",
+        keywords=[
+            "template",
+            "placeholders",
+            "parameterized templates",
+            "project_name",
+            "due_date",
+            "insert template",
+        ],
+        body_html="""
+        <p>Templates let you save a selected task subtree and recreate it later.</p>
+        <ul>
+            <li><strong>Save selected as template</strong> stores the current task plus its descendants.</li>
+            <li><strong>Create from template</strong> inserts the saved structure under the current selection or at top level.</li>
+            <li>Templates preserve hierarchy, notes, tags, custom-column values, attachments, and dependency structure where possible.</li>
+        </ul>
+        <p><strong>Parameterized templates</strong> support placeholders such as <code>{project_name}</code>, <code>{due_date}</code>, <code>{owner}</code>, and <code>{location}</code>.</p>
+        <ul>
+            <li>When placeholders are detected, the app opens a value-entry dialog before insertion.</li>
+            <li>Placeholder replacement is applied throughout the saved payload so the inserted tasks are ordinary editable tasks after creation.</li>
+            <li>Fields containing <code>date</code> in the placeholder name are prefilled with today's ISO date to speed up template instantiation.</li>
+        </ul>
+        """,
+    ),
+    HelpChapter(
+        anchor="reminders",
+        title="Reminders and Notifications",
+        keywords=[
+            "reminder",
+            "notification",
+            "snooze",
+            "mute",
+            "priority 1",
+            "reminder column",
+            "grouped popup",
+        ],
+        body_html="""
+        <p>Reminders are local, persistent, and optional.</p>
+        <ul>
+            <li>Set a reminder directly from the Details panel or by editing the <strong>Reminder</strong> datetime column in the tree.</li>
+            <li>Create reminders at an exact date/time or derive them from the due date using a minutes-before offset.</li>
+            <li>Reminder popups are <strong>grouped and sorted</strong> so multiple due items appear in a single dialog rather than separate spammy windows.</li>
+            <li>Accepted reminders are marked as fired and do not come back unless rescheduled.</li>
+            <li>Snoozing lets you choose a new date/time for the whole shown batch.</li>
+        </ul>
+        <p><strong>Reminder modes</strong> are available from the View menu:</p>
+        <ul>
+            <li><strong>Reminders on</strong>: show all due reminders</li>
+            <li><strong>Mute all reminders</strong>: suppress all reminder popups</li>
+            <li><strong>Only priority 1 reminders</strong>: show only the most urgent reminder items</li>
+        </ul>
+        """,
+    ),
+    HelpChapter(
+        anchor="archive",
+        title="Archive, Restore, Delete",
+        keywords=["archive", "restore", "archive browser", "delete", "completed", "safety"],
+        body_html="""
+        <p>The app treats <strong>archive</strong> as the safe default instead of hard delete.</p>
+        <ul>
+            <li>Archiving removes tasks from normal active views while preserving the full subtree.</li>
+            <li><strong>Restore from archive</strong> restores archived selections when they are already visible.</li>
+            <li><strong>Browse archive</strong> opens a dedicated archive browser where you can search archived roots and choose exactly what to restore.</li>
+            <li>The review workflow and Completed / Archive perspective make historical cleanup easier.</li>
+            <li><strong>Delete permanently</strong> is explicit and remains a separate destructive action.</li>
+        </ul>
+        """,
+    ),
+    HelpChapter(
+        anchor="bulk",
+        title="Bulk Edit",
+        keywords=["bulk", "multi-select", "status", "priority", "due", "tags", "archive", "delete"],
+        body_html="""
+        <p>Select multiple rows in the tree and run <strong>Bulk edit</strong> for one-step batch changes.</p>
+        <p>Available operations include:</p>
+        <ul>
+            <li>Set status</li>
+            <li>Set priority</li>
+            <li>Shift due dates by day offset</li>
+            <li>Set or clear due date</li>
+            <li>Add or remove tags</li>
+            <li>Archive selected tasks</li>
+            <li>Permanently delete selected tasks</li>
+        </ul>
+        <p>Bulk edit is useful for triage, cleanup, and review sessions without manually opening each task.</p>
+        """,
+    ),
+    HelpChapter(
+        anchor="calendar",
+        title="Calendar / Agenda",
+        keywords=[
+            "calendar",
+            "agenda",
+            "week numbers",
+            "markers",
+            "due date",
+            "day list",
+        ],
+        body_html="""
+        <p>The Calendar / Agenda dock provides a date-oriented view of scheduled work.</p>
+        <ul>
+            <li>The monthly calendar shows <strong>ISO week numbers</strong>.</li>
+            <li>Dates with tasks receive visual markers so work is visible before you click a day.</li>
+            <li>Marker color follows completion state:
+                <ul>
+                    <li>red for low completion</li>
+                    <li>orange for mid completion</li>
+                    <li>green for high or completed work</li>
+                </ul>
+            </li>
+            <li>Select a date to populate the agenda list with tasks due on that day.</li>
+            <li>Activate an agenda item to jump focus back to the corresponding task in the tree.</li>
+        </ul>
+        """,
+    ),
+    HelpChapter(
+        anchor="analytics",
+        title="Analytics Dashboard",
+        keywords=[
+            "analytics",
+            "dashboard",
+            "completed today",
+            "trend",
+            "top tags",
+            "active vs archived",
+        ],
+        body_html="""
+        <p>The Analytics dock gives a lightweight summary of system health and execution trends.</p>
+        <ul>
+            <li><strong>Completed today</strong> and <strong>completed this week</strong> summarize throughput.</li>
+            <li><strong>Overdue open</strong>, <strong>open with no due date</strong>, and <strong>Inbox unprocessed</strong> highlight planning debt.</li>
+            <li><strong>Active open / Archived</strong> helps estimate whether the system is being trimmed or allowed to bloat.</li>
+            <li><strong>Projects stalled/blocked/no-next</strong> shows the project-health counts used by review workflows.</li>
+            <li>The trend list shows recent daily completion counts.</li>
+            <li>The tags list shows the most active tags among recent completed tasks.</li>
+        </ul>
+        <p>The dashboard is intended to be quick to read, not a heavy BI tool.</p>
+        """,
+    ),
+    HelpChapter(
+        anchor="backup",
+        title="Backup, Import/Export, and Safety",
+        keywords=[
+            "backup",
+            "import",
+            "export",
+            "snapshot",
+            "rotation",
+            "theme",
+            "integrity",
+        ],
+        body_html="""
+        <p>Backup features are designed for safety and portability.</p>
+        <ul>
+            <li>Manual data export and import are available from <strong>File &gt; Backup</strong>.</li>
+            <li>Theme export and import are stored separately so UI styling can travel without forcing data replacement.</li>
+            <li>Automatic versioned snapshots support retention rotation and can also be triggered manually with <strong>Create snapshot now</strong>.</li>
+            <li>Import validates stored integrity data and warns if the backup appears inconsistent.</li>
+            <li>Schema migrations are additive and versioned to preserve existing user data.</li>
+        </ul>
+        <p>Most of these actions are also reachable through the command palette.</p>
+        """,
+    ),
+    HelpChapter(
+        anchor="shortcuts",
+        title="Keyboard Shortcuts",
+        keywords=["shortcuts", "keyboard", "hotkeys", "enter", "space", "ctrl", "f1"],
+        body_html="""
+        <p><strong>General</strong></p>
+        <ul>
+            <li><code>Ctrl+N</code> Add task</li>
+            <li><code>Ctrl+Shift+N</code> Add child task</li>
+            <li><code>Ctrl+F</code> Focus search</li>
+            <li><code>Ctrl+L</code> Focus quick add</li>
+            <li><code>Ctrl+Shift+P</code> Open command palette</li>
+            <li><code>F1</code> Open the embedded help guide</li>
+            <li><code>Ctrl+Z</code> Undo (platform standard)</li>
+            <li><code>Ctrl+Shift+Z</code> or platform standard Redo</li>
+        </ul>
+        <p><strong>Tree actions</strong></p>
+        <ul>
+            <li><code>Delete</code> Archive selected task(s)</li>
+            <li><code>Shift+Delete</code> Permanently delete selected task(s)</li>
+            <li><code>Ctrl+D</code> Duplicate selected task</li>
+            <li><code>Ctrl+Shift+D</code> Duplicate selected subtree</li>
+            <li><code>Ctrl+Shift+B</code> Open bulk edit</li>
+            <li><code>Ctrl+Shift+Up</code> Move selected task up</li>
+            <li><code>Ctrl+Shift+Down</code> Move selected task down</li>
+            <li><code>Ctrl+Shift+R</code> Open archive browser</li>
+            <li><code>Ctrl+Alt+Up</code> Collapse all</li>
+            <li><code>Ctrl+Alt+Down</code> Expand all</li>
+            <li><code>Enter</code> Edit current cell when the tree has focus</li>
+            <li><code>Space</code> Toggle collapse/expand on the current row</li>
+        </ul>
+        <p><strong>Quick symbols</strong></p>
+        <ul>
+            <li><code>+</code> Add task</li>
+            <li><code>-</code> Archive selected</li>
+            <li><code>Shift++</code> Add child to selected</li>
+            <li><code>Shift+-</code> Archive sibling near selected row</li>
+        </ul>
+        """,
+    ),
+    HelpChapter(
+        anchor="tips",
+        title="Tips and Troubleshooting",
+        keywords=[
+            "troubleshooting",
+            "filters",
+            "tips",
+            "tooltips",
+            "missing task",
+            "drag drop",
+            "reminders",
+        ],
+        body_html="""
+        <ul>
+            <li>If a new task appears missing, switch perspective to <strong>All</strong> and clear search and filters.</li>
+            <li>If drag/drop is unavailable, check for active filters or a non-manual sort mode.</li>
+            <li>If restore seems to do nothing, use <strong>Browse archive</strong> and restore from the archive browser directly.</li>
+            <li>If reminder popups are too noisy for the current session, switch the View menu reminder mode to mute all or priority-1-only.</li>
+            <li>Use saved views, the command palette, and review categories together to avoid manual re-filtering during repetitive workflows.</li>
+            <li>Tooltips can be enabled or disabled from the Help menu.</li>
+            <li>The embedded help dialog itself has a search box, indexed chapters, internal links, and Home navigation for fast lookup.</li>
+        </ul>
+        """,
+    ),
+]
+
+
+def _build_help_html() -> str:
+    toc = []
+    sections = []
+
+    for idx, ch in enumerate(HELP_CHAPTERS, start=1):
+        toc.append(f'<li><a href="#{ch.anchor}">{idx}. {ch.title}</a></li>')
+        sections.append(
+            f"""
+            <hr/>
+            <h2 id="{ch.anchor}">{idx}. {ch.title}</h2>
+            <p><a href="#home">Back to Help Home</a></p>
+            {ch.body_html}
+            """
+        )
+
+    return f"""
+    <html>
+      <head>
+        <style>
+          body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; line-height: 1.5; }}
+          code {{ background: #f2f2f2; padding: 2px 4px; border-radius: 3px; }}
+          h1, h2 {{ margin-bottom: 0.25em; }}
+          hr {{ margin: 18px 0; }}
+        </style>
+      </head>
+      <body>
+        <a id="home"></a>
+        <h1>CustomTaskManager Help</h1>
+        <p>This embedded guide explains workflows, features, shortcuts, and syntax in detail.</p>
+        <h2>Index</h2>
+        <ol>
+          {"".join(toc)}
+        </ol>
+        {"".join(sections)}
+      </body>
+    </html>
+    """
+
+
+class HelpDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Help")
+        self.resize(1080, 760)
+
+        self._chapter_search_blob: dict[str, str] = {}
+        for ch in HELP_CHAPTERS:
+            self._chapter_search_blob[ch.anchor] = " ".join(
+                [ch.title, " ".join(ch.keywords), ch.body_html]
+            ).lower()
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(8)
+
+        top = QHBoxLayout()
+        lbl = QLabel("Search help")
+        lbl.setToolTip("Type keywords to filter the chapter index and search guide content.")
+        top.addWidget(lbl)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Find topic or keyword...")
+        self.search.setToolTip("Search chapters and find text inside the guide.")
+        self.search.textChanged.connect(self._filter_index)
+        self.search.returnPressed.connect(self._find_next)
+        top.addWidget(self.search, 1)
+
+        self.btn_find_next = QPushButton("Find Next")
+        self.btn_find_next.setToolTip("Find next occurrence of current search text in guide content.")
+        self.btn_find_next.clicked.connect(self._find_next)
+        self.btn_find_prev = QPushButton("Find Prev")
+        self.btn_find_prev.setToolTip("Find previous occurrence of current search text in guide content.")
+        self.btn_find_prev.clicked.connect(self._find_prev)
+        self.btn_home = QPushButton("Home")
+        self.btn_home.setToolTip("Jump to Help home/index section.")
+        self.btn_home.clicked.connect(lambda: self.browser.scrollToAnchor("home"))
+        top.addWidget(self.btn_find_next)
+        top.addWidget(self.btn_find_prev)
+        top.addWidget(self.btn_home)
+        root.addLayout(top)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        root.addWidget(splitter, 1)
+
+        self.index = QListWidget()
+        self.index.setToolTip("Indexed chapters. Click a chapter to jump.")
+        self.index.itemClicked.connect(self._jump_from_index)
+        splitter.addWidget(self.index)
+
+        self.browser = QTextBrowser()
+        self.browser.setOpenLinks(False)
+        self.browser.setOpenExternalLinks(False)
+        self.browser.anchorClicked.connect(self._on_anchor_clicked)
+        self.browser.setHtml(_build_help_html())
+        self.browser.setToolTip("Help content. Use internal links to jump between chapters.")
+        splitter.addWidget(self.browser)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([280, 760])
+
+        self._populate_index()
+        self.browser.scrollToAnchor("home")
+
+    def _populate_index(self):
+        self.index.clear()
+        for i, ch in enumerate(HELP_CHAPTERS, start=1):
+            item = QListWidgetItem(f"{i}. {ch.title}")
+            item.setData(Qt.ItemDataRole.UserRole, ch.anchor)
+            item.setToolTip(f"Keywords: {', '.join(ch.keywords)}")
+            self.index.addItem(item)
+
+    def _jump_from_index(self, item: QListWidgetItem):
+        if not item:
+            return
+        anchor = str(item.data(Qt.ItemDataRole.UserRole) or "")
+        if anchor:
+            self.browser.scrollToAnchor(anchor)
+
+    def _on_anchor_clicked(self, url: QUrl):
+        s = url.toString()
+        if s.startswith("#"):
+            self.browser.scrollToAnchor(s[1:])
+            return
+        # Safety fallback for internal relative anchors.
+        if not url.isRelative():
+            self.browser.setSource(url)
+            return
+        self.browser.scrollToAnchor(s)
+
+    def _filter_index(self):
+        term = self.search.text().strip().lower()
+        visible_anchors = []
+        for i in range(self.index.count()):
+            item = self.index.item(i)
+            anchor = str(item.data(Qt.ItemDataRole.UserRole) or "")
+            blob = self._chapter_search_blob.get(anchor, "")
+            visible = (not term) or (term in blob)
+            item.setHidden(not visible)
+            if visible:
+                visible_anchors.append(anchor)
+
+        if term and visible_anchors:
+            self.browser.scrollToAnchor(visible_anchors[0])
+
+    def _find_next(self):
+        term = self.search.text().strip()
+        if not term:
+            return
+        if not self.browser.find(term):
+            cursor = self.browser.textCursor()
+            cursor.movePosition(cursor.MoveOperation.Start)
+            self.browser.setTextCursor(cursor)
+            self.browser.find(term)
+
+    def _find_prev(self):
+        term = self.search.text().strip()
+        if not term:
+            return
+        if not self.browser.find(term, QTextDocument.FindFlag.FindBackward):
+            cursor = self.browser.textCursor()
+            cursor.movePosition(cursor.MoveOperation.End)
+            self.browser.setTextCursor(cursor)
+            self.browser.find(term, QTextDocument.FindFlag.FindBackward)

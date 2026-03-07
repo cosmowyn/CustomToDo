@@ -18,6 +18,8 @@ from theme import ThemeManager
 
 STATUSES = ["Todo", "In Progress", "Blocked", "Done"]
 CUSTOM_TYPES = ["text", "int", "date", "bool", "list"]
+PLANNED_BUCKETS = ["inbox", "today", "upcoming", "someday"]
+RECURRENCE_FREQUENCIES = ["daily", "weekly", "monthly", "yearly"]
 
 
 def _parse_iso_date(s: str):
@@ -25,6 +27,31 @@ def _parse_iso_date(s: str):
         return None
     try:
         return datetime.strptime(s, "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+
+def _parse_iso_datetime(s: str):
+    raw = str(s or "").strip()
+    if not raw:
+        return None
+    normalized = raw.replace("T", " ")
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(normalized, fmt)
+        except Exception:
+            continue
+    for text, fmt in (
+        (normalized[:19], "%Y-%m-%d %H:%M:%S"),
+        (normalized[:16], "%Y-%m-%d %H:%M"),
+        (normalized[:10], "%Y-%m-%d"),
+    ):
+        try:
+            return datetime.strptime(text, fmt)
+        except Exception:
+            continue
+    try:
+        return datetime.fromisoformat(normalized)
     except Exception:
         return None
 
@@ -91,14 +118,17 @@ class TaskTreeModel(QAbstractItemModel):
         self.core_cols = [
             ("description", "Task description", "text"),
             ("due_date", "Planned due date", "date"),
+            ("reminder_at", "Reminder", "datetime"),
             ("last_update", "Last update", "datetime"),
             ("priority", "Priority", "int"),
             ("status", "Status", "status"),
+            ("progress", "Progress", "progress"),
         ]
 
         self.custom_cols = []
         self.root = _Node(task=None, parent=None)
         self._id_map: dict[int, _Node] = {}
+        self._last_added_task_id: int | None = None
 
         self.reload_all(reset_header_state=False)
 
@@ -165,6 +195,9 @@ class TaskTreeModel(QAbstractItemModel):
 
     def max_nesting_levels(self) -> int:
         return self.MAX_NESTING_LEVELS
+
+    def last_added_task_id(self) -> int | None:
+        return self._last_added_task_id
 
     def _parent_node_for_id(self, parent_id: int | None) -> _Node:
         if parent_id is None:
@@ -322,6 +355,9 @@ class TaskTreeModel(QAbstractItemModel):
         def walk(n: _Node):
             t = dict(n.task)
             t["custom"] = dict(n.task.get("custom") or {})
+            tid = int(n.task["id"])
+            t["attachments"] = self.db.fetch_attachments(tid)
+            t["dependencies"] = [int(d["id"]) for d in self.db.fetch_dependencies(tid)]
             out.append(t)
             for c in n.children:
                 walk(c)
@@ -412,7 +448,8 @@ class TaskTreeModel(QAbstractItemModel):
             | Qt.ItemFlag.ItemIsDragEnabled
             | Qt.ItemFlag.ItemIsDropEnabled
         )
-        if index.column() != 2:
+        key = self.column_key(index.column())
+        if key not in {"last_update", "progress"}:
             base |= Qt.ItemFlag.ItemIsEditable
         return base
 
@@ -488,15 +525,19 @@ class TaskTreeModel(QAbstractItemModel):
             return None
 
         col = index.column()
-        value = self._get_value(node.task, col)
+        value = self._get_value(node.task, col, node)
+        ctype = self._col_type(col)
 
         if role == Qt.ItemDataRole.DisplayRole:
-            if self._col_type(col) == "date":
+            if ctype == "date":
                 d = _parse_iso_date(value) if isinstance(value, str) else None
                 return d.strftime("%d-%b-%Y") if d else ""
-            if col == 2:
-                return value or ""
-            if self._col_type(col) == "bool":
+            if ctype == "datetime":
+                dt = _parse_iso_datetime(value)
+                return dt.strftime("%d-%b-%Y %H:%M") if dt else ("" if value is None else str(value))
+            if ctype == "progress":
+                return str(value or "")
+            if ctype == "bool":
                 return "Yes" if (value == "1" or value is True) else "No"
             return "" if value is None else str(value)
 
@@ -518,14 +559,14 @@ class TaskTreeModel(QAbstractItemModel):
     def setData(self, index: QModelIndex, value, role=Qt.ItemDataRole.EditRole):
         if role != Qt.ItemDataRole.EditRole or not index.isValid():
             return False
-        if index.column() == 2:
+        if self.column_key(index.column()) in {"last_update", "progress"}:
             return False
 
         node = index.internalPointer()
         task_id = int(node.task["id"])
         col = index.column()
 
-        old = self._get_value(node.task, col)
+        old = self._get_value(node.task, col, node)
         new = self._normalize_incoming(col, value)
         if self._col_type(col) == "list" and new is not None:
             self._ensure_list_option_for_column(col, str(new))
@@ -572,9 +613,38 @@ class TaskTreeModel(QAbstractItemModel):
         if self.db.add_custom_column_list_value(int(cc["id"]), val):
             current.append(val)
 
-    def _get_value(self, task: dict, col: int):
+    def _progress_text(self, node: _Node | None) -> str:
+        if node is None or not node.task:
+            return ""
+        active_children = [c for c in node.children if c.task and not c.task.get("archived_at")]
+        total = len(active_children)
+        if total <= 0:
+            return ""
+        done = sum(1 for c in active_children if str(c.task.get("status") or "") == "Done")
+        pct = int(round((100.0 * done) / total))
+        return f"{done}/{total} ({pct}%)"
+
+    def _auto_mark_parent_done_chain(self, start_node: _Node | None) -> list[_Node]:
+        changed_nodes: list[_Node] = []
+        cur = start_node
+        while cur and cur.task:
+            active_children = [c for c in cur.children if c.task and not c.task.get("archived_at")]
+            total = len(active_children)
+            done = sum(1 for c in active_children if str(c.task.get("status") or "") == "Done")
+            if total > 0 and done >= total and str(cur.task.get("status") or "") != "Done":
+                tid = int(cur.task["id"])
+                self.db.update_task_field(tid, "status", "Done")
+                cur.task = self.db.fetch_task_by_id(tid)
+                changed_nodes.append(cur)
+            cur = cur.parent if (cur.parent and cur.parent.task) else None
+        return changed_nodes
+
+    def _get_value(self, task: dict, col: int, node: _Node | None = None):
         if col < len(self.core_cols):
-            return task.get(self.core_cols[col][0])
+            key = self.core_cols[col][0]
+            if key == "progress":
+                return self._progress_text(node)
+            return task.get(key)
         cc = self.custom_cols[col - len(self.core_cols)]
         return task.get("custom", {}).get(cc["id"])
 
@@ -591,6 +661,17 @@ class TaskTreeModel(QAbstractItemModel):
                 return s[:10]
             return s
 
+        if t == "datetime":
+            if value is None:
+                return None
+            s = str(value).strip()
+            if not s:
+                return None
+            dt = _parse_iso_datetime(s)
+            if dt is not None:
+                return dt.strftime("%Y-%m-%d %H:%M:%S")
+            return s
+
         if t == "int":
             try:
                 return int(value)
@@ -600,6 +681,9 @@ class TaskTreeModel(QAbstractItemModel):
         if t == "status":
             s = str(value)
             return s if s in STATUSES else "Todo"
+
+        if t == "progress":
+            return str(value or "")
 
         if t == "bool":
             if isinstance(value, bool):
@@ -654,35 +738,72 @@ class TaskTreeModel(QAbstractItemModel):
             )
 
     # ---------- Public operations ----------
-    def add_task(self, parent_id: int | None = None) -> bool:
+    def add_task_with_values(
+        self,
+        description: str,
+        due_date: str | None = None,
+        priority: int | None = None,
+        parent_id: int | None = None,
+        planned_bucket: str | None = None,
+    ) -> bool:
         parent_node = self._parent_node_for_id(parent_id)
         effective_parent_id = None if parent_node == self.root else int(parent_node.task["id"])
 
         if not self._can_add_under_parent(parent_node):
             return False
 
+        bucket = str(planned_bucket or "inbox").strip().lower()
+        if bucket not in PLANNED_BUCKETS:
+            bucket = "inbox"
+
         task = {
-            "description": "",
-            "due_date": None,
+            "description": str(description or ""),
+            "due_date": due_date,
             "last_update": self._now_iso(),
-            "priority": 3,
+            "priority": int(priority) if priority is not None else 3,
             "status": "Todo",
             "parent_id": effective_parent_id,
             "sort_order": self.db.next_sort_order(effective_parent_id),
             "is_collapsed": 0,
+            "notes": "",
+            "archived_at": None,
+            "planned_bucket": bucket,
+            "effort_minutes": None,
+            "actual_minutes": 0,
+            "timer_started_at": None,
+            "waiting_for": None,
+            "recurrence_rule_id": None,
+            "recurrence_origin_task_id": None,
+            "is_generated_occurrence": 0,
+            "reminder_at": None,
+            "reminder_minutes_before": None,
+            "reminder_fired_at": None,
+            "tags": [],
             "custom": {},
         }
 
         insert_row = len(parent_node.children)
-
-        self.undo_stack.push(AddTaskCommand(self, effective_parent_id, insert_row, task))
+        cmd = AddTaskCommand(self, effective_parent_id, insert_row, task)
+        self.undo_stack.push(cmd)
+        self._last_added_task_id = int(cmd.task_id) if cmd.task_id is not None else None
         return True
+
+    def add_task(self, parent_id: int | None = None) -> bool:
+        return self.add_task_with_values("", None, None, parent_id=parent_id)
 
     def add_child_task(self, parent_task_id: int) -> bool:
         return self.add_task(parent_id=int(parent_task_id))
 
     def delete_task(self, task_id: int):
         self.undo_stack.push(DeleteSubtreeCommand(self, int(task_id)))
+
+    def archive_task(self, task_id: int):
+        self.db.archive_task(int(task_id))
+        self.reload_all(reset_header_state=False)
+
+    def restore_task(self, task_id: int):
+        self.db.restore_task(int(task_id))
+        self.reload_all(reset_header_state=False)
 
     def add_custom_column(self, name: str, col_type: str, list_values: list[str] | None = None):
         name = (name or "").strip()
@@ -727,6 +848,333 @@ class TaskTreeModel(QAbstractItemModel):
 
         self.undo_stack.push(RemoveColumnCommandCompat(self, col_full, values))
 
+    # ---------- High-level task helpers ----------
+    def task_details(self, task_id: int) -> dict | None:
+        return self.db.fetch_task_details(int(task_id))
+
+    def all_tags(self) -> list[str]:
+        return self.db.fetch_all_tags()
+
+    def set_task_notes(self, task_id: int, notes: str):
+        self.db.update_task_field(int(task_id), "notes", str(notes or ""))
+        self._refresh_task_node_and_emit(int(task_id))
+
+    def set_task_tags(self, task_id: int, tags):
+        self.db.set_task_tags(int(task_id), tags)
+        self._refresh_task_node_and_emit(int(task_id))
+
+    def set_task_bucket(self, task_id: int, bucket: str):
+        b = str(bucket or "").strip().lower()
+        if b not in PLANNED_BUCKETS:
+            b = "inbox"
+        self.db.update_task_field(int(task_id), "planned_bucket", b)
+        self._refresh_task_node_and_emit(int(task_id))
+
+    def set_task_waiting_for(self, task_id: int, waiting_for: str):
+        text = str(waiting_for or "").strip()
+        self.db.update_task_field(int(task_id), "waiting_for", text if text else None)
+        self._refresh_task_node_and_emit(int(task_id))
+
+    def set_task_dependencies(self, task_id: int, depends_on_ids: list[int]):
+        self.db.set_task_dependencies(int(task_id), depends_on_ids)
+        self._refresh_task_node_and_emit(int(task_id))
+
+    def set_task_recurrence(self, task_id: int, frequency: str | None, create_next_on_done: bool):
+        self.db.set_recurrence_for_task(int(task_id), frequency, bool(create_next_on_done))
+        self._refresh_task_node_and_emit(int(task_id))
+
+    def set_task_effort_minutes(self, task_id: int, minutes: int | None):
+        val = None if minutes is None else max(0, int(minutes))
+        self.db.update_task_field(int(task_id), "effort_minutes", val)
+        self._refresh_task_node_and_emit(int(task_id))
+
+    def set_task_actual_minutes(self, task_id: int, minutes: int):
+        self.db.update_task_field(int(task_id), "actual_minutes", max(0, int(minutes)))
+        self._refresh_task_node_and_emit(int(task_id))
+
+    def start_task_timer(self, task_id: int):
+        self.db.start_timer(int(task_id))
+        self._refresh_task_node_and_emit(int(task_id))
+
+    def stop_task_timer(self, task_id: int):
+        self.db.stop_timer(int(task_id))
+        self._refresh_task_node_and_emit(int(task_id))
+
+    def set_task_reminder(self, task_id: int, reminder_at_iso: str | None, minutes_before: int | None = None):
+        self.db.set_task_reminder(int(task_id), reminder_at_iso, minutes_before)
+        self._refresh_task_node_and_emit(int(task_id))
+
+    def clear_task_reminder(self, task_id: int):
+        self.db.clear_task_reminder(int(task_id))
+        self._refresh_task_node_and_emit(int(task_id))
+
+    def fetch_pending_reminders(self, limit: int = 20) -> list[dict]:
+        return self.db.fetch_pending_reminders(limit=int(limit))
+
+    def mark_reminder_fired(self, task_id: int):
+        self.db.mark_reminder_fired(int(task_id))
+        self._refresh_task_node_and_emit(int(task_id))
+
+    def is_task_archived(self, task_id: int) -> bool:
+        node = self.node_for_id(int(task_id))
+        if not node or not node.task:
+            t = self.db.fetch_task_by_id(int(task_id))
+            if not t:
+                return False
+            return bool(str(t.get("archived_at") or "").strip())
+        return bool(str(node.task.get("archived_at") or "").strip())
+
+    def fetch_archive_roots(self) -> list[dict]:
+        return self.db.fetch_archive_roots()
+
+    def fetch_review_data(
+        self,
+        waiting_days: int = 7,
+        stalled_days: int = 14,
+        recent_days: int = 30,
+    ) -> dict[str, list[dict]]:
+        return self.db.fetch_review_data(
+            waiting_days=int(waiting_days),
+            stalled_days=int(stalled_days),
+            recent_days=int(recent_days),
+        )
+
+    def project_health_for_task(self, task_id: int, stalled_days: int = 14) -> dict | None:
+        return self.db.project_health_for_task(int(task_id), stalled_days=int(stalled_days))
+
+    def fetch_analytics_summary(self, trend_days: int = 14, tag_days: int = 30) -> dict:
+        return self.db.fetch_analytics_summary(trend_days=int(trend_days), tag_days=int(tag_days))
+
+    def add_attachment(self, task_id: int, path: str, label: str = ""):
+        self.db.add_attachment(int(task_id), path, label)
+        self._refresh_task_node_and_emit(int(task_id))
+
+    def remove_attachment(self, attachment_id: int):
+        self.db.remove_attachment(int(attachment_id))
+        self.reload_all(reset_header_state=False)
+
+    def list_saved_filter_views(self) -> list[dict]:
+        return self.db.list_saved_filter_views()
+
+    def save_filter_view(self, name: str, state: dict, overwrite: bool = True):
+        self.db.save_filter_view(name, state, overwrite=bool(overwrite))
+
+    def load_filter_view(self, name: str) -> dict | None:
+        return self.db.load_filter_view(name)
+
+    def delete_filter_view(self, name: str):
+        self.db.delete_filter_view(name)
+
+    def archive_tasks(self, task_ids: list[int]):
+        for tid in task_ids:
+            self.db.archive_task(int(tid))
+        self.reload_all(reset_header_state=False)
+
+    def restore_tasks(self, task_ids: list[int]):
+        for tid in task_ids:
+            self.db.restore_task(int(tid))
+        self.reload_all(reset_header_state=False)
+
+    def hard_delete_tasks(self, task_ids: list[int]):
+        ids = sorted({int(x) for x in task_ids if int(x) > 0})
+        # Delete deepest nodes first to avoid duplicate subtree deletion work
+        ids.sort(key=lambda tid: self._node_depth_from_top(self.node_for_id(tid)) if self.node_for_id(tid) else 0, reverse=True)
+        for tid in ids:
+            if self.node_for_id(tid):
+                self.delete_task(int(tid))
+
+    def move_task_relative(self, task_id: int, delta: int) -> bool:
+        node = self.node_for_id(int(task_id))
+        if not node or not node.parent:
+            return False
+        parent_node = node.parent
+        parent_id = None if parent_node == self.root else int(parent_node.task["id"])
+        old_row = self._row_in_parent(node)
+        new_row = max(0, min(old_row + int(delta), len(parent_node.children) - 1))
+        if new_row == old_row:
+            return False
+        self.undo_stack.push(MoveNodeCommand(self, int(task_id), parent_id, new_row))
+        return True
+
+    def duplicate_task(self, task_id: int, include_children: bool = False) -> int | None:
+        node = self.node_for_id(int(task_id))
+        if not node or not node.task:
+            return None
+
+        source_items = self.snapshot_subtree(int(task_id)) if include_children else [dict(node.task)]
+        if not source_items:
+            return None
+
+        root_old_id = int(source_items[0]["id"])
+        root_parent_id = source_items[0].get("parent_id")
+        old_to_new: dict[int, int] = {}
+        first_new_id: int | None = None
+        dep_map: dict[int, list[int]] = {}
+
+        for t in source_items:
+            old_id = int(t["id"])
+            dep_map[old_id] = [int(d["id"]) for d in self.db.fetch_dependencies(old_id)]
+
+            new_task = dict(t)
+            new_task.pop("id", None)
+            new_task["custom"] = {int(k): v for k, v in (t.get("custom") or {}).items()}
+            new_task["last_update"] = self._now_iso()
+            new_task["is_collapsed"] = 0
+            new_task["recurrence_rule_id"] = None
+            new_task["recurrence_origin_task_id"] = None
+            new_task["is_generated_occurrence"] = 0
+            new_task["reminder_at"] = None
+            new_task["reminder_minutes_before"] = None
+            new_task["reminder_fired_at"] = None
+
+            if old_id == root_old_id:
+                new_parent_id = root_parent_id
+            else:
+                if include_children:
+                    new_parent_id = old_to_new.get(int(t.get("parent_id")))
+                else:
+                    new_parent_id = root_parent_id
+            new_task["parent_id"] = new_parent_id
+            new_task["sort_order"] = self.db.next_sort_order(new_parent_id)
+
+            tags = list(t.get("tags") or [])
+            new_task["tags"] = tags
+
+            new_id = int(self.db.insert_task(new_task, keep_id=False))
+            old_to_new[old_id] = new_id
+            if first_new_id is None:
+                first_new_id = new_id
+
+            for att in self.db.fetch_attachments(old_id):
+                try:
+                    self.db.add_attachment(new_id, str(att.get("path") or ""), str(att.get("label") or ""))
+                except Exception:
+                    continue
+
+        # Rebind internal dependencies within duplicated subtree
+        for old_id, new_id in old_to_new.items():
+            old_deps = dep_map.get(old_id, [])
+            mapped = [old_to_new[d] for d in old_deps if d in old_to_new]
+            if mapped:
+                self.db.set_task_dependencies(new_id, mapped)
+
+        self.reload_all(reset_header_state=False)
+        return first_new_id
+
+    def save_template_from_task(self, name: str, task_id: int):
+        subtree = self.snapshot_subtree(int(task_id))
+        payload = {"tasks": []}
+        for t in subtree:
+            tid = int(t["id"])
+            item = dict(t)
+            item["custom"] = {str(k): v for k, v in (t.get("custom") or {}).items()}
+            item["attachments"] = self.db.fetch_attachments(tid)
+            item["dependencies"] = [int(d["id"]) for d in self.db.fetch_dependencies(tid)]
+            payload["tasks"].append(item)
+        self.db.save_template(str(name or "").strip(), payload, overwrite=True)
+
+    def list_templates(self) -> list[dict]:
+        return self.db.list_templates()
+
+    def delete_template(self, name: str):
+        self.db.delete_template(name)
+
+    def load_template_payload(self, name: str) -> dict | None:
+        return self.db.load_template(name)
+
+    def create_tasks_from_template_payload(self, payload: dict, parent_id: int | None = None) -> int | None:
+        if not payload:
+            return None
+        tasks = payload.get("tasks") if isinstance(payload, dict) else None
+        if not isinstance(tasks, list) or not tasks:
+            return None
+
+        root_old_id = int(tasks[0]["id"])
+        old_to_new: dict[int, int] = {}
+        first_new: int | None = None
+
+        for t in tasks:
+            old_id = int(t["id"])
+            new_task = dict(t)
+            new_task.pop("id", None)
+            new_task["custom"] = {int(k): v for k, v in (t.get("custom") or {}).items()}
+            new_task.pop("created_at", None)
+            new_task["last_update"] = self._now_iso()
+            new_task["is_collapsed"] = 0
+            new_task["recurrence_rule_id"] = None
+            new_task["recurrence_origin_task_id"] = None
+            new_task["is_generated_occurrence"] = 0
+            new_task["reminder_at"] = None
+            new_task["reminder_minutes_before"] = None
+            new_task["reminder_fired_at"] = None
+
+            if old_id == root_old_id:
+                new_parent = parent_id
+            else:
+                src_parent = t.get("parent_id")
+                if src_parent is None:
+                    new_parent = parent_id
+                else:
+                    new_parent = old_to_new.get(int(src_parent), parent_id)
+            new_task["parent_id"] = new_parent
+            new_task["sort_order"] = self.db.next_sort_order(new_parent)
+
+            new_id = int(self.db.insert_task(new_task, keep_id=False))
+            old_to_new[old_id] = new_id
+            if first_new is None:
+                first_new = new_id
+
+            for att in t.get("attachments") or []:
+                try:
+                    self.db.add_attachment(
+                        new_id,
+                        str(att.get("path") or ""),
+                        str(att.get("label") or ""),
+                    )
+                except Exception:
+                    continue
+
+        for t in tasks:
+            old_id = int(t["id"])
+            new_id = old_to_new.get(old_id)
+            if not new_id:
+                continue
+            deps = [old_to_new.get(int(d)) for d in (t.get("dependencies") or [])]
+            mapped = [int(x) for x in deps if x]
+            if mapped:
+                self.db.set_task_dependencies(new_id, mapped)
+
+        self.reload_all(reset_header_state=False)
+        return first_new
+
+    def create_tasks_from_template(self, name: str, parent_id: int | None = None) -> int | None:
+        payload = self.db.load_template(name)
+        return self.create_tasks_from_template_payload(payload, parent_id=parent_id)
+
+    def _refresh_task_node_and_emit(self, task_id: int):
+        node = self.node_for_id(int(task_id))
+        if node and node.task:
+            node.task = self.db.fetch_task_by_id(int(task_id))
+            idx0 = self._index_for_node(node, 0)
+            idx_last = self._index_for_node(node, self.columnCount() - 1)
+            if idx0.isValid() and idx_last.isValid():
+                self.dataChanged.emit(
+                    idx0,
+                    idx_last,
+                    [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.BackgroundRole, Qt.ItemDataRole.ForegroundRole],
+                )
+            if node.parent and node.parent.task:
+                pidx0 = self._index_for_node(node.parent, 0)
+                pidx_last = self._index_for_node(node.parent, self.columnCount() - 1)
+                if pidx0.isValid() and pidx_last.isValid():
+                    self.dataChanged.emit(
+                        pidx0,
+                        pidx_last,
+                        [Qt.ItemDataRole.DisplayRole],
+                    )
+        else:
+            self.reload_all(reset_header_state=False)
+
     def _now_iso(self) -> str:
         return datetime.now().replace(microsecond=0).isoformat(sep=" ")
 
@@ -738,8 +1186,26 @@ class TaskTreeModel(QAbstractItemModel):
         self.db.insert_task(task, keep_id=True)
 
     def _db_restore_subtree(self, subtree: list[dict]):
+        restored_ids = []
         for t in subtree:
             self.db.insert_task(t, keep_id=True)
+            restored_ids.append(int(t["id"]))
+            for att in t.get("attachments") or []:
+                try:
+                    self.db.add_attachment(int(t["id"]), str(att.get("path") or ""), str(att.get("label") or ""))
+                except Exception:
+                    continue
+        for t in subtree:
+            deps = []
+            for raw in (t.get("dependencies") or []):
+                try:
+                    dep_id = int(raw)
+                except Exception:
+                    continue
+                if dep_id in restored_ids:
+                    deps.append(dep_id)
+            if deps:
+                self.db.set_task_dependencies(int(t["id"]), deps)
         self.reload_all(reset_header_state=False)
 
     # ---------- Collapse persistence helpers ----------
@@ -791,6 +1257,32 @@ class TaskTreeModel(QAbstractItemModel):
         drop_ids(node)
 
         self.endRemoveRows()
+
+        changed_parents: list[_Node] = []
+        if parent_node.task:
+            changed_parents = self._auto_mark_parent_done_chain(parent_node)
+
+        if parent_node.task:
+            pidx0 = self._index_for_node(parent_node, 0)
+            pidx_last = self._index_for_node(parent_node, self.columnCount() - 1)
+            if pidx0.isValid() and pidx_last.isValid():
+                self.dataChanged.emit(pidx0, pidx_last, [Qt.ItemDataRole.DisplayRole])
+
+        for pnode in changed_parents:
+            pidx0 = self._index_for_node(pnode, 0)
+            pidx_last = self._index_for_node(pnode, self.columnCount() - 1)
+            if pidx0.isValid() and pidx_last.isValid():
+                self.dataChanged.emit(
+                    pidx0,
+                    pidx_last,
+                    [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.BackgroundRole, Qt.ItemDataRole.ForegroundRole],
+                )
+            if pnode.parent and pnode.parent.task:
+                gpidx0 = self._index_for_node(pnode.parent, 0)
+                gpidx_last = self._index_for_node(pnode.parent, self.columnCount() - 1)
+                if gpidx0.isValid() and gpidx_last.isValid():
+                    self.dataChanged.emit(gpidx0, gpidx_last, [Qt.ItemDataRole.DisplayRole])
+
         self.refresh_due_highlights()
 
     def _apply_cell_change(self, task_id: int, col: int, new_value):
@@ -802,15 +1294,42 @@ class TaskTreeModel(QAbstractItemModel):
         if not node or not node.task:
             return
 
+        old_status = str(node.task.get("status") or "")
+        edited_key = None
+
         if col < len(self.core_cols):
             key = self.core_cols[col][0]
-            if key in {"description", "due_date", "priority", "status"}:
-                self.db.update_task_field(task_id, key, new_value)
+            edited_key = key
+            if key in {"description", "due_date", "priority", "status", "reminder_at"}:
+                if key == "reminder_at":
+                    self.db.update_task_fields(
+                        int(task_id),
+                        {
+                            "reminder_at": new_value,
+                            "reminder_fired_at": None,
+                        },
+                    )
+                else:
+                    self.db.update_task_field(task_id, key, new_value)
         else:
             cc = self.custom_cols[col - len(self.core_cols)]
             self.db.update_custom_value(task_id, cc["id"], new_value)
 
+        generated_occurrence = False
+        if edited_key == "status":
+            new_status = str(new_value or "")
+            if old_status != "Done" and new_status == "Done":
+                next_id = self.db.maybe_create_next_recurrence(int(task_id))
+                generated_occurrence = next_id is not None
+
+        if generated_occurrence:
+            self.reload_all(reset_header_state=False)
+            return
+
         node.task = self.db.fetch_task_by_id(task_id)
+        auto_completed_parents: list[_Node] = []
+        if edited_key == "status":
+            auto_completed_parents = self._auto_mark_parent_done_chain(node.parent)
 
         idx0 = self._index_for_node(node, 0)
         idx_last = self._index_for_node(node, self.columnCount() - 1)
@@ -820,6 +1339,28 @@ class TaskTreeModel(QAbstractItemModel):
                 idx_last,
                 [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.BackgroundRole, Qt.ItemDataRole.ForegroundRole],
             )
+
+        # Parent row may expose progress rollup that depends on child changes.
+        if node.parent and node.parent.task:
+            pidx0 = self._index_for_node(node.parent, 0)
+            pidx_last = self._index_for_node(node.parent, self.columnCount() - 1)
+            if pidx0.isValid() and pidx_last.isValid():
+                self.dataChanged.emit(pidx0, pidx_last, [Qt.ItemDataRole.DisplayRole])
+
+        for pnode in auto_completed_parents:
+            pidx0 = self._index_for_node(pnode, 0)
+            pidx_last = self._index_for_node(pnode, self.columnCount() - 1)
+            if pidx0.isValid() and pidx_last.isValid():
+                self.dataChanged.emit(
+                    pidx0,
+                    pidx_last,
+                    [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.BackgroundRole, Qt.ItemDataRole.ForegroundRole],
+                )
+            if pnode.parent and pnode.parent.task:
+                gpidx0 = self._index_for_node(pnode.parent, 0)
+                gpidx_last = self._index_for_node(pnode.parent, self.columnCount() - 1)
+                if gpidx0.isValid() and gpidx_last.isValid():
+                    self.dataChanged.emit(gpidx0, gpidx_last, [Qt.ItemDataRole.DisplayRole])
 
     def _model_move_node(self, task_id: int, new_parent_id: int | None, new_row: int):
         node = self.node_for_id(task_id)
@@ -879,6 +1420,29 @@ class TaskTreeModel(QAbstractItemModel):
             ch.task["sort_order"] = i
             if int(ch.task["id"]) == task_id:
                 ch.task["parent_id"] = new_parent_id
+
+        changed_parents: list[_Node] = []
+        if old_parent_node.task:
+            changed_parents.extend(self._auto_mark_parent_done_chain(old_parent_node))
+        if new_parent_node.task and new_parent_node is not old_parent_node:
+            changed_parents.extend(self._auto_mark_parent_done_chain(new_parent_node))
+
+        for parent_node in (old_parent_node, new_parent_node):
+            if parent_node.task:
+                pidx0 = self._index_for_node(parent_node, 0)
+                pidx_last = self._index_for_node(parent_node, self.columnCount() - 1)
+                if pidx0.isValid() and pidx_last.isValid():
+                    self.dataChanged.emit(pidx0, pidx_last, [Qt.ItemDataRole.DisplayRole])
+
+        for pnode in changed_parents:
+            pidx0 = self._index_for_node(pnode, 0)
+            pidx_last = self._index_for_node(pnode, self.columnCount() - 1)
+            if pidx0.isValid() and pidx_last.isValid():
+                self.dataChanged.emit(
+                    pidx0,
+                    pidx_last,
+                    [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.BackgroundRole, Qt.ItemDataRole.ForegroundRole],
+                )
 
         self.refresh_due_highlights()
 
