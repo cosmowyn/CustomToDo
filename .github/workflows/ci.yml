@@ -39,7 +39,7 @@ jobs:
         run: python -m py_compile *.py
 
       - name: Run tests
-        run: pytest -q
+        run: python -m pytest -q
 
       - name: UI smoke import
         run: |
