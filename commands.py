@@ -119,22 +119,24 @@ class MoveNodeCommand(QUndoCommand):
 
 
 class AddCustomColumnCommand(QUndoCommand):
-    def __init__(self, model, name: str, col_type: str):
+    def __init__(self, model, name: str, col_type: str, list_values: list[str] | None = None):
         super().__init__("Add custom column")
         self.model = model
         self.name = name
         self.col_type = col_type
+        self.list_values = list(list_values or [])
         self.col_id = None
 
     def redo(self):
         if self.col_id is None:
-            self.col_id = self.model.db.add_custom_column(self.name, self.col_type)
+            self.col_id = self.model.db.add_custom_column(self.name, self.col_type, self.list_values)
         else:
             self.model.db.restore_custom_column({
                 "id": self.col_id,
                 "name": self.name,
                 "col_type": self.col_type,
                 "created_at": self.model._now_iso(),
+                "list_values": list(self.list_values),
             })
         self.model.reload_all(reset_header_state=True)
 

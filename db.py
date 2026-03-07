@@ -40,6 +40,12 @@ class Database:
             self.conn.commit()
             ver = 2
 
+        if ver < 3:
+            self._migrate_to_v3_custom_list_values()
+            cur.execute("PRAGMA user_version=3;")
+            self.conn.commit()
+            ver = 3
+
     def _create_v1(self):
         cur = self.conn.cursor()
         cur.executescript(
@@ -133,6 +139,23 @@ class Database:
             """
         )
 
+    def _migrate_to_v3_custom_list_values(self):
+        cur = self.conn.cursor()
+        cur.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS custom_column_list_values (
+                column_id   INTEGER NOT NULL,
+                value       TEXT    NOT NULL,
+                sort_order  INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (column_id, value),
+                FOREIGN KEY (column_id) REFERENCES custom_columns(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_custom_column_list_values_col_sort
+            ON custom_column_list_values(column_id, sort_order, value);
+            """
+        )
+
     @contextmanager
     def tx(self):
         try:
@@ -146,16 +169,63 @@ class Database:
     def fetch_custom_columns(self):
         cur = self.conn.cursor()
         cur.execute("SELECT id, name, col_type FROM custom_columns ORDER BY id;")
-        return [dict(r) for r in cur.fetchall()]
+        cols = [dict(r) for r in cur.fetchall()]
 
-    def add_custom_column(self, name: str, col_type: str) -> int:
+        cur.execute(
+            """
+            SELECT column_id, value
+            FROM custom_column_list_values
+            ORDER BY column_id, sort_order ASC, value ASC;
+            """
+        )
+        list_rows = cur.fetchall()
+        list_values_by_col = {}
+        for r in list_rows:
+            cid = int(r["column_id"])
+            list_values_by_col.setdefault(cid, []).append(str(r["value"]))
+
+        for c in cols:
+            if str(c.get("col_type") or "") == "list":
+                c["list_values"] = list_values_by_col.get(int(c["id"]), [])
+
+        return cols
+
+    def _normalize_list_values(self, list_values) -> list[str]:
+        if not isinstance(list_values, list):
+            return []
+        out = []
+        seen = set()
+        for v in list_values:
+            s = str(v).strip()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            out.append(s)
+        return out
+
+    def _insert_list_values(self, cur, col_id: int, list_values: list[str]):
+        for i, val in enumerate(list_values, start=1):
+            cur.execute(
+                """
+                INSERT INTO custom_column_list_values(column_id, value, sort_order)
+                VALUES(?, ?, ?)
+                ON CONFLICT(column_id, value) DO NOTHING;
+                """,
+                (int(col_id), val, i),
+            )
+
+    def add_custom_column(self, name: str, col_type: str, list_values: list[str] | None = None) -> int:
+        normalized = self._normalize_list_values(list_values)
         with self.tx():
             cur = self.conn.cursor()
             cur.execute(
                 "INSERT INTO custom_columns(name, col_type, created_at) VALUES(?, ?, ?);",
                 (name.strip(), col_type, now_iso()),
             )
-            return int(cur.lastrowid)
+            col_id = int(cur.lastrowid)
+            if col_type == "list" and normalized:
+                self._insert_list_values(cur, col_id, normalized)
+            return col_id
 
     def remove_custom_column(self, col_id: int):
         with self.tx():
@@ -163,12 +233,43 @@ class Database:
             cur.execute("DELETE FROM custom_columns WHERE id=?;", (int(col_id),))
 
     def restore_custom_column(self, col: dict):
+        list_values = self._normalize_list_values(col.get("list_values"))
         with self.tx():
             cur = self.conn.cursor()
             cur.execute(
                 "INSERT INTO custom_columns(id, name, col_type, created_at) VALUES(?, ?, ?, ?);",
                 (int(col["id"]), col["name"], col["col_type"], col["created_at"]),
             )
+            if str(col.get("col_type") or "") == "list" and list_values:
+                self._insert_list_values(cur, int(col["id"]), list_values)
+
+    def add_custom_column_list_value(self, col_id: int, value: str) -> bool:
+        s = str(value).strip()
+        if not s:
+            return False
+        with self.tx():
+            cur = self.conn.cursor()
+            cur.execute(
+                "SELECT 1 FROM custom_column_list_values WHERE column_id=? AND value=?;",
+                (int(col_id), s),
+            )
+            if cur.fetchone():
+                return False
+
+            cur.execute(
+                "SELECT COALESCE(MAX(sort_order), 0) + 1 AS next_order FROM custom_column_list_values WHERE column_id=?;",
+                (int(col_id),),
+            )
+            next_order = int(cur.fetchone()["next_order"])
+
+            cur.execute(
+                """
+                INSERT INTO custom_column_list_values(column_id, value, sort_order)
+                VALUES(?, ?, ?);
+                """,
+                (int(col_id), s, next_order),
+            )
+        return True
 
     # ---------- Tasks (hierarchy) ----------
     def fetch_tasks(self):

@@ -17,7 +17,7 @@ from theme import ThemeManager
 
 
 STATUSES = ["Todo", "In Progress", "Blocked", "Done"]
-CUSTOM_TYPES = ["text", "int", "date", "bool"]
+CUSTOM_TYPES = ["text", "int", "date", "bool", "list"]
 
 
 def _parse_iso_date(s: str):
@@ -77,6 +77,8 @@ class _Node:
 
 
 class TaskTreeModel(QAbstractItemModel):
+    MAX_NESTING_LEVELS = 10
+
     def __init__(self, db):
         super().__init__()
         self.db = db
@@ -161,6 +163,49 @@ class TaskTreeModel(QAbstractItemModel):
     def node_for_id(self, task_id: int) -> Optional[_Node]:
         return self._id_map.get(int(task_id))
 
+    def max_nesting_levels(self) -> int:
+        return self.MAX_NESTING_LEVELS
+
+    def _parent_node_for_id(self, parent_id: int | None) -> _Node:
+        if parent_id is None:
+            return self.root
+        node = self.node_for_id(int(parent_id))
+        return node if node is not None else self.root
+
+    def _node_depth_from_top(self, node: _Node) -> int:
+        """
+        Depth relative to a top-level task:
+        - top-level task => 0
+        - its child => 1
+        """
+        depth = 0
+        cur = node
+        while cur.parent and cur.parent != self.root:
+            depth += 1
+            cur = cur.parent
+        return depth
+
+    def _subtree_max_relative_depth(self, node: _Node) -> int:
+        if not node.children:
+            return 0
+        return 1 + max(self._subtree_max_relative_depth(ch) for ch in node.children)
+
+    def _can_add_under_parent(self, parent_node: _Node) -> bool:
+        if parent_node == self.root:
+            return True
+        return (self._node_depth_from_top(parent_node) + 1) <= self.MAX_NESTING_LEVELS
+
+    def _can_place_subtree_under_parent(self, moving_node: _Node, new_parent_node: _Node) -> bool:
+        moved_root_new_depth = 0 if new_parent_node == self.root else self._node_depth_from_top(new_parent_node) + 1
+        deepest_after_move = moved_root_new_depth + self._subtree_max_relative_depth(moving_node)
+        return deepest_after_move <= self.MAX_NESTING_LEVELS
+
+    def can_add_child_task(self, parent_task_id: int) -> bool:
+        parent_node = self.node_for_id(int(parent_task_id))
+        if parent_node is None:
+            return False
+        return self._can_add_under_parent(parent_node)
+
     def task_id_from_index(self, index: QModelIndex) -> Optional[int]:
         if not index.isValid():
             return None
@@ -169,7 +214,7 @@ class TaskTreeModel(QAbstractItemModel):
             return None
         return int(node.task["id"])
 
-    def column_key(self, logical_index: int) -> str:
+    def column_key(self, logical_index: int) -> str: 
         if logical_index < len(self.core_cols):
             return self.core_cols[logical_index][0]
         cc = self.custom_cols[logical_index - len(self.core_cols)]
@@ -183,6 +228,90 @@ class TaskTreeModel(QAbstractItemModel):
         if parent_node is None:
             parent_node = self.root
         return [int(ch.task["id"]) for ch in parent_node.children if ch.task]
+
+    def _renumber_siblings(self, parent_id: int | None) -> None:
+        """
+        Reassign sequential sort_order values to the current in-memory sibling order
+        and persist that order to the database.
+        """
+        parent_node = self.root if parent_id is None else self.node_for_id(parent_id)
+        if parent_node is None:
+            parent_node = self.root
+
+        cur = self.db.conn.cursor()
+
+        for i, ch in enumerate(parent_node.children, start=1):
+            if not ch.task:
+                continue
+            task_id = int(ch.task["id"])
+            ch.task["sort_order"] = i
+            cur.execute(
+                "UPDATE tasks SET sort_order=? WHERE id=?;",
+                (i, task_id),
+            )
+
+        self.db.conn.commit()
+
+
+    def _apply_sibling_order(self, parent_id: int | None, ordered_ids: list[int]) -> None:
+        """
+        Force the children of parent_id into the exact id order given by ordered_ids,
+        then rewrite sort_order both in memory and in the database.
+
+        This is used by undo/redo commands to restore a previous sibling order safely.
+        """
+        parent_node = self.root if parent_id is None else self.node_for_id(parent_id)
+        if parent_node is None:
+            parent_node = self.root
+
+        # Current children mapped by id
+        by_id = {}
+        remaining = []
+        for ch in parent_node.children:
+            if ch.task:
+                by_id[int(ch.task["id"])] = ch
+            else:
+                remaining.append(ch)
+
+        # Rebuild children list in requested order
+        new_children = []
+        used = set()
+
+        for tid in ordered_ids:
+            node = by_id.get(int(tid))
+            if node is not None:
+                new_children.append(node)
+                used.add(int(tid))
+
+        # Append any children not present in ordered_ids at the end
+        for ch in parent_node.children:
+            if not ch.task:
+                continue
+            tid = int(ch.task["id"])
+            if tid not in used:
+                new_children.append(ch)
+
+        # Preserve any taskless nodes too, just in case
+        new_children.extend(remaining)
+
+        self.beginResetModel()
+        parent_node.children = new_children
+
+        cur = self.db.conn.cursor()
+        for i, ch in enumerate(parent_node.children, start=1):
+            if not ch.task:
+                continue
+            task_id = int(ch.task["id"])
+            ch.task["sort_order"] = i
+            cur.execute(
+                "UPDATE tasks SET sort_order=? WHERE id=?;",
+                (i, task_id),
+            )
+
+        self.db.conn.commit()
+        self.endResetModel()
+
+        self.refresh_due_highlights()
 
     def snapshot_subtree(self, root_id: int) -> list[dict]:
         node = self.node_for_id(root_id)
@@ -326,6 +455,13 @@ class TaskTreeModel(QAbstractItemModel):
                 return False
             cur = cur.parent
 
+        old_parent_node = dragged.parent
+        if old_parent_node is new_parent_node:
+            return True
+
+        if not self._can_place_subtree_under_parent(dragged, new_parent_node):
+            return False
+
         return True
 
     def dropMimeData(self, data, action, row, column, parent):
@@ -355,7 +491,7 @@ class TaskTreeModel(QAbstractItemModel):
         value = self._get_value(node.task, col)
 
         if role == Qt.ItemDataRole.DisplayRole:
-            if col == 1:
+            if self._col_type(col) == "date":
                 d = _parse_iso_date(value) if isinstance(value, str) else None
                 return d.strftime("%d-%b-%Y") if d else ""
             if col == 2:
@@ -391,6 +527,8 @@ class TaskTreeModel(QAbstractItemModel):
 
         old = self._get_value(node.task, col)
         new = self._normalize_incoming(col, value)
+        if self._col_type(col) == "list" and new is not None:
+            self._ensure_list_option_for_column(col, str(new))
         if old == new:
             return False
 
@@ -401,6 +539,38 @@ class TaskTreeModel(QAbstractItemModel):
         if col < len(self.core_cols):
             return self.core_cols[col][2]
         return self.custom_cols[col - len(self.core_cols)]["col_type"]
+
+    def col_type_for_column(self, col: int) -> str:
+        """Public helper for delegates/proxies: returns the logical column type."""
+        return self._col_type(col)
+
+    def _custom_col_meta(self, col: int) -> Optional[dict]:
+        if col < len(self.core_cols):
+            return None
+        idx = col - len(self.core_cols)
+        if idx < 0 or idx >= len(self.custom_cols):
+            return None
+        return self.custom_cols[idx]
+
+    def list_options_for_column(self, col: int) -> list[str]:
+        cc = self._custom_col_meta(col)
+        if not cc or str(cc.get("col_type") or "") != "list":
+            return []
+        vals = cc.get("list_values") or []
+        return [str(v) for v in vals]
+
+    def _ensure_list_option_for_column(self, col: int, value: str):
+        cc = self._custom_col_meta(col)
+        if not cc or str(cc.get("col_type") or "") != "list":
+            return
+        val = str(value or "").strip()
+        if not val:
+            return
+        current = cc.setdefault("list_values", [])
+        if val in current:
+            return
+        if self.db.add_custom_column_list_value(int(cc["id"]), val):
+            current.append(val)
 
     def _get_value(self, task: dict, col: int):
         if col < len(self.core_cols):
@@ -414,7 +584,9 @@ class TaskTreeModel(QAbstractItemModel):
         if t == "date":
             if value is None:
                 return None
-            s = str(value)
+            s = str(value).strip()
+            if not s:
+                return None
             if len(s) >= 10 and s[4] == "-" and s[7] == "-":
                 return s[:10]
             return s
@@ -434,6 +606,10 @@ class TaskTreeModel(QAbstractItemModel):
                 return "1" if value else "0"
             s = str(value).strip().lower()
             return "1" if s in {"1", "true", "yes", "y"} else "0"
+
+        if t == "list":
+            s = str(value or "").strip()
+            return s if s else None
 
         return "" if value is None else str(value)
 
@@ -478,37 +654,43 @@ class TaskTreeModel(QAbstractItemModel):
             )
 
     # ---------- Public operations ----------
-    def add_task(self, parent_id: int | None = None):
+    def add_task(self, parent_id: int | None = None) -> bool:
+        parent_node = self._parent_node_for_id(parent_id)
+        effective_parent_id = None if parent_node == self.root else int(parent_node.task["id"])
+
+        if not self._can_add_under_parent(parent_node):
+            return False
+
         task = {
             "description": "",
             "due_date": None,
             "last_update": self._now_iso(),
             "priority": 3,
             "status": "Todo",
-            "parent_id": parent_id,
-            "sort_order": self.db.next_sort_order(parent_id),
+            "parent_id": effective_parent_id,
+            "sort_order": self.db.next_sort_order(effective_parent_id),
             "is_collapsed": 0,
             "custom": {},
         }
 
-        parent_node = self.root if parent_id is None else self.node_for_id(parent_id)
-        insert_row = len(parent_node.children) if parent_node else 0
+        insert_row = len(parent_node.children)
 
-        self.undo_stack.push(AddTaskCommand(self, parent_id, insert_row, task))
+        self.undo_stack.push(AddTaskCommand(self, effective_parent_id, insert_row, task))
+        return True
 
-    def add_child_task(self, parent_task_id: int):
-        self.add_task(parent_id=int(parent_task_id))
+    def add_child_task(self, parent_task_id: int) -> bool:
+        return self.add_task(parent_id=int(parent_task_id))
 
     def delete_task(self, task_id: int):
         self.undo_stack.push(DeleteSubtreeCommand(self, int(task_id)))
 
-    def add_custom_column(self, name: str, col_type: str):
+    def add_custom_column(self, name: str, col_type: str, list_values: list[str] | None = None):
         name = (name or "").strip()
         if not name:
             return
         if col_type not in CUSTOM_TYPES:
             col_type = "text"
-        self.undo_stack.push(AddCustomColumnCommand(self, name, col_type))
+        self.undo_stack.push(AddCustomColumnCommand(self, name, col_type, list_values))
 
     def remove_custom_column(self, col_id: int):
         col = None
@@ -525,6 +707,17 @@ class TaskTreeModel(QAbstractItemModel):
         if not row:
             return
         col_full = dict(row)
+        if str(col_full.get("col_type") or "") == "list":
+            cur.execute(
+                """
+                SELECT value
+                FROM custom_column_list_values
+                WHERE column_id=?
+                ORDER BY sort_order ASC, value ASC;
+                """,
+                (int(col_id),),
+            )
+            col_full["list_values"] = [str(r["value"]) for r in cur.fetchall()]
 
         values = {}
         for tid, node in self._id_map.items():
@@ -646,6 +839,10 @@ class TaskTreeModel(QAbstractItemModel):
             if int(cur.task["id"]) == task_id:
                 return
             cur = cur.parent
+
+        if old_parent_node is not new_parent_node:
+            if not self._can_place_subtree_under_parent(node, new_parent_node):
+                return
 
         old_parent_index = QModelIndex() if old_parent_node == self.root else self._index_for_node(old_parent_node, 0)
         new_parent_index = QModelIndex() if new_parent_node == self.root else self._index_for_node(new_parent_node, 0)

@@ -58,17 +58,26 @@ def _ensure_venv_python() -> Path:
 
 
 def _ensure_pyinstaller(venv_python: Path) -> None:
+    # Check import inside the venv; this is the real source of truth.
     try:
         subprocess.run(
-            [str(venv_python), "-m", "PyInstaller", "--version"],
+            [str(venv_python), "-c", "import PyInstaller, sys; print('PyInstaller OK', PyInstaller.__version__, sys.executable)"],
             check=True,
             capture_output=True,
             text=True,
         )
     except Exception:
-        print("PyInstaller not found in venv. Installing pyinstaller...")
-        subprocess.run([str(venv_python), "-m", "pip", "install", "pyinstaller"], check=True)
-
+        print("PyInstaller not importable in this venv. Installing pyinstaller...")
+        subprocess.run(
+            [str(venv_python), "-m", "pip", "install", "-U", "pyinstaller", "pyinstaller-hooks-contrib"],
+            check=True,
+        )
+        subprocess.run(
+            [str(venv_python), "-c", "import PyInstaller, sys; print('PyInstaller OK', PyInstaller.__version__, sys.executable)"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
 
 def _pick_file(title: str, filetypes: list[tuple[str, str]]) -> str | None:
     try:
@@ -208,6 +217,7 @@ def _pyinstaller_cmd(
         "--noconfirm",
         "--clean",
         "--windowed",  # no console
+        "--log-level", "INFO",
     ]
 
     # Standalone: onefile on Windows, onedir on macOS/Linux
@@ -306,16 +316,44 @@ def main() -> int:
     print()
 
     try:
-        subprocess.run(cmd, cwd=str(project_root), check=True)
-    except subprocess.CalledProcessError as e:
-        print("\nBuild failed.")
-        return e.returncode
+        result = subprocess.run(cmd, cwd=str(project_root), text=True, capture_output=True)
+        if result.stdout:
+            print(result.stdout)
+        if result.stderr:
+            print(result.stderr)
+        if result.returncode != 0:
+            print("\nBuild failed.")
+            return result.returncode
     except Exception as e:
         print("\nBuild failed.")
         print(str(e))
         return 1
 
+    # Validate expected build output exists
     out_path = project_root / "dist"
+    if _is_windows():
+        expected = out_path / f"{APP_NAME}.exe"
+    else:
+        expected = out_path / APP_NAME
+
+    if not expected.exists():
+        print("\nERROR: PyInstaller returned success, but expected output was not found:")
+        print(f"Expected: {expected}")
+
+        if out_path.exists():
+            print("\nContents of dist/:")
+            for p in out_path.rglob("*"):
+                rel = p.relative_to(out_path)
+                print(f"  {rel}")
+        else:
+            print("\nNote: dist/ folder does not exist at all.")
+
+        print("\nPossible causes:")
+        print("- Antivirus/EDR quarantined the output immediately.")
+        print("- Build actually failed but only logged to stderr.")
+        print("- APP_NAME mismatch vs produced artifact name.")
+        return 2
+
     print("\nBuild complete.")
     print(f"Output folder: {out_path}")
     return 0

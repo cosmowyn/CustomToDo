@@ -1,4 +1,12 @@
 import sys
+
+# --- PyInstaller splash: close it ASAP (safe when not built with --splash) ---
+try:
+    import pyi_splash  # type: ignore
+    pyi_splash.close()
+except Exception:
+    pass
+
 from PySide6.QtCore import Qt, QTimer, QModelIndex, QEvent
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
@@ -13,16 +21,18 @@ from model import TaskTreeModel, STATUSES
 from delegates import install_delegates
 from settings_ui import SettingsDialog
 from columns_ui import AddColumnDialog, RemoveColumnDialog
-
 from filter_proxy import TaskFilterProxyModel
 from filters_ui import FilterPanel
+
+from backup_io import export_backup_ui, import_backup_ui
+from theme_io import export_themes_ui, import_themes_ui
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("Focus Todo")
+        self.setWindowTitle("CustomTaskManager")
 
         self.db = Database(app_db_path())
 
@@ -30,9 +40,17 @@ class MainWindow(QMainWindow):
         self.model = TaskTreeModel(self.db)
         self.undo_stack = self.model.undo_stack
 
+        # Apply theme early so palette + fonts are correct
+        self.model.apply_theme_to_app(QApplication.instance())
+        icon = self.model.current_window_icon()
+        if icon is not None:
+            self.setWindowIcon(icon)
+
         # Proxy (search + filters)
         self.proxy = TaskFilterProxyModel(self)
         self.proxy.setSourceModel(self.model)
+        self._pending_edit_on_insert = False
+        self.model.rowsInserted.connect(self._on_source_rows_inserted)
 
         # View
         self.view = QTreeView()
@@ -40,7 +58,7 @@ class MainWindow(QMainWindow):
         self.view.setSelectionBehavior(QTreeView.SelectionBehavior.SelectRows)
         self.view.setSelectionMode(QTreeView.SelectionMode.SingleSelection)
         self.view.setAlternatingRowColors(True)
-        self.view.setUniformRowHeights(False)  # allow dynamic row heights if delegates increase them
+        self.view.setUniformRowHeights(False)
 
         hdr = self.view.header()
         hdr.setSectionsMovable(True)
@@ -49,6 +67,7 @@ class MainWindow(QMainWindow):
         self.view.setRootIsDecorated(True)
         self.view.setItemsExpandable(True)
         self.view.setExpandsOnDoubleClick(True)
+        self._row_action_gutter = 72
 
         # Default drag/drop enabled (will be disabled automatically when filters active)
         self._set_dragdrop_enabled(True)
@@ -81,13 +100,26 @@ class MainWindow(QMainWindow):
         search_row.addWidget(clear_btn)
 
         add_btn = QPushButton("Add task")
-        add_btn.clicked.connect(lambda: self.model.add_task(parent_id=None))
+        add_btn.clicked.connect(self._add_task_and_edit)
 
         # Layout
         main = QWidget()
         v = QVBoxLayout(main)
         v.addLayout(search_row)
-        v.addWidget(self.view)
+
+        self._row_gutter = QWidget()
+        self._row_gutter.setObjectName("RowActionGutter")
+        self._row_gutter.setFixedWidth(self._row_action_gutter)
+
+        tree_row = QHBoxLayout()
+        tree_row.setContentsMargins(0, 0, 0, 0)
+        tree_row.setSpacing(0)
+        tree_row.addWidget(self._row_gutter)
+        tree_row.addWidget(self.view, 1)
+
+        tree_wrap = QWidget()
+        tree_wrap.setLayout(tree_row)
+        v.addWidget(tree_wrap, 1)
 
         h = QHBoxLayout()
         h.addStretch(1)
@@ -96,29 +128,27 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(main)
 
-        # -------- Row overlay buttons (+ / -) --------
-        # These are viewport children so they float aligned to the row.
-        self.row_add_btn = QToolButton(self.view.viewport())
+        # --- Row overlay buttons (+ / -) ---
+        self.row_add_btn = QToolButton(self._row_gutter)
         self.row_add_btn.setObjectName("RowAddChildButton")
         self.row_add_btn.setText("+")
         self.row_add_btn.setToolTip("Add child task to this row")
-        self.row_add_btn.setAutoRaise(False)
         self.row_add_btn.clicked.connect(self._row_add_child_clicked)
         self.row_add_btn.hide()
 
-        self.row_del_btn = QToolButton(self.view.viewport())
+        self.row_del_btn = QToolButton(self._row_gutter)
         self.row_del_btn.setObjectName("RowDeleteButton")
-        self.row_del_btn.setText("–")  # en-dash looks nicer; change to "-" if you prefer
+        self.row_del_btn.setText("–")
         self.row_del_btn.setToolTip("Delete this task")
-        self.row_del_btn.setAutoRaise(False)
         self.row_del_btn.clicked.connect(self._row_delete_clicked)
         self.row_del_btn.hide()
 
-        # Keep them aligned on selection / scroll / resize
         self.view.selectionModel().currentChanged.connect(lambda *_: self._update_row_action_buttons())
         self.view.verticalScrollBar().valueChanged.connect(lambda *_: self._update_row_action_buttons())
         self.view.horizontalScrollBar().valueChanged.connect(lambda *_: self._update_row_action_buttons())
+        self.view.header().geometriesChanged.connect(lambda: self._update_row_action_buttons())
         self.view.viewport().installEventFilter(self)
+        self.view.installEventFilter(self)
 
         # Advanced filter panel (dock)
         self._init_filter_dock()
@@ -129,6 +159,7 @@ class MainWindow(QMainWindow):
         self.model.modelReset.connect(self._apply_collapsed_state_to_view)
         self.proxy.modelReset.connect(self._apply_collapsed_state_to_view)
 
+        # Timer to refresh due-date gradient + foreground contrast
         self._due_timer = QTimer(self)
         self._due_timer.setInterval(60_000)
         self._due_timer.timeout.connect(self.model.refresh_due_highlights)
@@ -142,20 +173,25 @@ class MainWindow(QMainWindow):
         focus_search.triggered.connect(lambda: self.search.setFocus())
         self.addAction(focus_search)
 
-        # Initial position
         QTimer.singleShot(0, self._update_row_action_buttons)
 
-        self._closeSplash()
+    # ---------- Splash (close again once UI shows) ----------
+    def showEvent(self, event):
+        super().showEvent(event)
+        try:
+            import pyi_splash  # type: ignore
+            pyi_splash.close()
+        except Exception:
+            pass
 
-    # ---------- event filter for overlay alignment ----------
+    # ---------- Event filter for overlay alignment ----------
     def eventFilter(self, obj, event):
-        if obj is self.view.viewport():
-            if event.type() in (QEvent.Type.Resize, QEvent.Type.Wheel):
+        if obj in (self.view.viewport(), self.view):
+            if event.type() in (QEvent.Type.Resize, QEvent.Type.Wheel, QEvent.Type.Move, QEvent.Type.Show):
                 QTimer.singleShot(0, self._update_row_action_buttons)
         return super().eventFilter(obj, event)
 
     def _row_button_size(self) -> int:
-        # Small but always usable, scales with font size
         h = self.view.fontMetrics().height()
         return max(18, min(28, h + 6))
 
@@ -166,65 +202,143 @@ class MainWindow(QMainWindow):
             self.row_del_btn.hide()
             return
 
-        # Use column 0 rect for stable y positioning (and indentation)
         idx0 = idx.siblingAtColumn(0)
         rect = self.view.visualRect(idx0)
+        vp_rect = self.view.viewport().rect()
 
-        # If not visible (filtered out or scrolled away)
-        if rect.isNull() or rect.height() <= 0:
+        if rect.isNull() or rect.height() <= 0 or not rect.intersects(vp_rect):
             self.row_add_btn.hide()
             self.row_del_btn.hide()
             return
 
         size = self._row_button_size()
         gap = 6
+        required_gutter = (2 * size) + gap + 8
+        if self._row_action_gutter < required_gutter:
+            self._row_action_gutter = required_gutter
+            self._row_gutter.setFixedWidth(self._row_action_gutter)
+        gutter_w = self._row_gutter.width()
 
         self.row_add_btn.setFixedSize(size, size)
         self.row_del_btn.setFixedSize(size, size)
 
-        # ✅ Left-align to the row itself (respects tree indentation)
-        x_base = rect.left() + 2
-        y = rect.center().y() + ( size / 2 ) + 2
+        src_idx0 = self.proxy.mapToSource(idx0)
+        task_id = self.model.task_id_from_index(src_idx0)
+        can_add_child = task_id is not None and self.model.can_add_child_task(task_id)
+        self.row_add_btn.setEnabled(can_add_child)
+        if can_add_child:
+            self.row_add_btn.setToolTip("Add child task to this row")
+        else:
+            self.row_add_btn.setToolTip(
+                f"Max nesting depth ({self.model.max_nesting_levels()}) reached for this branch"
+            )
 
-        x_add = max(0, x_base)
-        x_del = max(0, x_base + size + gap)
-        y = max(0, y)
+        # center two buttons within the dedicated left gutter
+        x_add = max(4, (gutter_w - ((2 * size) + gap)) // 2)
+        x_del = x_add + size + gap
 
-        # Keep inside viewport horizontally (avoid clipping)
-        vp_w = self.view.viewport().width()
-        if x_del + size > vp_w:
-            x_del = max(0, vp_w - size)
-            x_add = max(0, x_del - (size + gap))
+        center_global = self.view.viewport().mapToGlobal(rect.center())
+        center_in_gutter = self._row_gutter.mapFromGlobal(center_global)
+        y = center_in_gutter.y() - (size // 2)
+        y = max(0, min(self._row_gutter.height() - size, y))
 
         self.row_add_btn.move(x_add, y)
         self.row_del_btn.move(x_del, y)
 
         self.row_add_btn.show()
         self.row_del_btn.show()
-
         self.row_add_btn.raise_()
         self.row_del_btn.raise_()
         
     def _row_add_child_clicked(self):
-        # Add child to the currently selected row (exactly what the overlay aligns to)
         pidx = self.view.currentIndex()
         if not pidx.isValid():
             return
-
         src = self.proxy.mapToSource(pidx)
         task_id = self.model.task_id_from_index(src)
         if task_id is None:
             return
-
-        # Expand the selected row so the new child is visible
         self.view.expand(pidx)
-        self.model.add_child_task(task_id)
-
+        if not self.model.add_child_task(task_id):
+            self._pending_edit_on_insert = False
+            self._show_nesting_limit_message()
         QTimer.singleShot(0, self._update_row_action_buttons)
 
     def _row_delete_clicked(self):
-        # Delete currently selected row
         self._delete_selected()
+        QTimer.singleShot(0, self._update_row_action_buttons)
+
+    def _request_edit_after_insert(self):
+        self._pending_edit_on_insert = True
+
+    def _show_nesting_limit_message(self):
+        max_depth = self.model.max_nesting_levels()
+        QMessageBox.information(
+            self,
+            "Nesting limit reached",
+            f"A branch can be nested at most {max_depth} levels below a top-level parent.",
+        )
+
+    def _on_source_rows_inserted(self, parent: QModelIndex, first: int, last: int):
+        if not self._pending_edit_on_insert:
+            return
+
+        self._pending_edit_on_insert = False
+
+        # Focus the first column of the last inserted row
+        src_idx = self.model.index(last, 0, parent)
+        if not src_idx.isValid():
+            return
+
+        proxy_idx = self.proxy.mapFromSource(src_idx)
+        if not proxy_idx.isValid():
+            return
+
+        # Ensure visible and selected
+        if parent.isValid():
+            parent_proxy = self.proxy.mapFromSource(parent)
+            if parent_proxy.isValid():
+                self.view.expand(parent_proxy)
+
+        self.view.setCurrentIndex(proxy_idx)
+        self.view.scrollTo(proxy_idx)
+
+        QTimer.singleShot(0, lambda: self.view.edit(proxy_idx))
+
+    def _add_task_and_edit(self):
+        self._request_edit_after_insert()
+        if not self.model.add_task(parent_id=None):
+            self._pending_edit_on_insert = False
+
+    def _delete_sibling_of_selected(self):
+        pidx = self._selected_proxy_index()
+        if not pidx:
+            return
+
+        src = self.proxy.mapToSource(pidx)
+        if not src.isValid():
+            return
+
+        parent_src = src.parent()
+        row = src.row()
+
+        sibling_src = QModelIndex()
+
+        # Prefer next sibling, else previous sibling
+        next_row = row + 1
+        if self.model.rowCount(parent_src) > next_row:
+            sibling_src = self.model.index(next_row, 0, parent_src)
+        elif row - 1 >= 0:
+            sibling_src = self.model.index(row - 1, 0, parent_src)
+
+        if not sibling_src.isValid():
+            return
+
+        task_id = self.model.task_id_from_index(sibling_src)
+        if task_id is None:
+            return
+
+        self.model.delete_task(task_id)
         QTimer.singleShot(0, self._update_row_action_buttons)
 
     # ---------- Filters ----------
@@ -243,6 +357,7 @@ class MainWindow(QMainWindow):
     def _on_search_changed(self, text: str):
         self.proxy.set_search_text(text)
         self._update_dragdrop_mode()
+        QTimer.singleShot(0, self._update_row_action_buttons)
 
     def _apply_filters(self):
         statuses = self.filter_panel.status_allowed()
@@ -288,10 +403,10 @@ class MainWindow(QMainWindow):
 
         add_act = QAction("Add task", self)
         add_act.setShortcut(QKeySequence(Qt.CTRL | Qt.Key.Key_N))
-        add_act.triggered.connect(lambda: self.model.add_task(parent_id=None))
+        add_act.triggered.connect(self._add_task_and_edit)
 
         add_child_act = QAction("Add child task", self)
-        add_child_act.setShortcut(QKeySequence(Qt.Key.Key_Control | Qt.Key.Key_N | Qt.Key.Key_Shift))
+        add_child_act.setShortcut(QKeySequence(Qt.CTRL | Qt.SHIFT | Qt.Key.Key_N))
         add_child_act.triggered.connect(self._add_child_to_selected)
 
         del_act = QAction("Delete task", self)
@@ -306,10 +421,46 @@ class MainWindow(QMainWindow):
         toggle_filters_act.setChecked(False)
         toggle_filters_act.triggered.connect(self._toggle_filters_dock)
 
+        collapse_all_act = QAction("Collapse all", self)
+        collapse_all_act.setShortcut(QKeySequence(Qt.CTRL | Qt.SHIFT | Qt.Key.Key_Up))
+        collapse_all_act.triggered.connect(self._collapse_all)
+
+        expand_all_act = QAction("Expand all", self)
+        expand_all_act.setShortcut(QKeySequence(Qt.CTRL | Qt.SHIFT | Qt.Key.Key_Down))
+        expand_all_act.triggered.connect(self._expand_all)
+
         menubar = self.menuBar()
 
         m_file = menubar.addMenu("File")
         m_file.addAction(settings_act)
+
+        # Backup submenu (data + themes)
+        m_backup = m_file.addMenu("Backup")
+
+        export_db_act = QAction("Export Data…", self)
+        export_db_act.triggered.connect(lambda: export_backup_ui(self, self.db))
+        m_backup.addAction(export_db_act)
+
+        import_db_act = QAction("Import Data…", self)
+        import_db_act.triggered.connect(lambda: import_backup_ui(self))
+        m_backup.addAction(import_db_act)
+
+        m_backup.addSeparator()
+
+        export_theme_act = QAction("Export Themes…", self)
+        export_theme_act.triggered.connect(lambda: export_themes_ui(self, self.model.settings))
+        m_backup.addAction(export_theme_act)
+
+        import_theme_act = QAction("Import Themes…", self)
+        import_theme_act.triggered.connect(
+            lambda: import_themes_ui(
+                self,
+                self.model.settings,
+                apply_callback=lambda: self._apply_theme_now(),
+            )
+        )
+        m_backup.addAction(import_theme_act)
+
         m_file.addSeparator()
         exit_act = QAction("Exit", self)
         exit_act.triggered.connect(self.close)
@@ -325,11 +476,13 @@ class MainWindow(QMainWindow):
 
         m_view = menubar.addMenu("View")
         m_view.addAction(toggle_filters_act)
+        m_view.addSeparator()
+        m_view.addAction(collapse_all_act)
+        m_view.addAction(expand_all_act)
 
         self.m_columns = menubar.addMenu("Columns")
         self.m_columns.aboutToShow.connect(self._rebuild_columns_menu)
-
-        # macOS: ensure the menu is not empty at creation time, otherwise it may not show
+        # macOS: empty menus sometimes don't show; build once now
         self._rebuild_columns_menu()
 
         tb = QToolBar("Main", self)
@@ -342,6 +495,26 @@ class MainWindow(QMainWindow):
 
         self._toggle_filters_act = toggle_filters_act
 
+        add_shortcut_act = QAction(self)
+        add_shortcut_act.setShortcut(QKeySequence("+"))
+        add_shortcut_act.triggered.connect(self._add_task_and_edit)
+        self.addAction(add_shortcut_act)
+
+        remove_shortcut_act = QAction(self)
+        remove_shortcut_act.setShortcut(QKeySequence("-"))
+        remove_shortcut_act.triggered.connect(self._delete_selected)
+        self.addAction(remove_shortcut_act)
+
+        add_child_shortcut_act = QAction(self)
+        add_child_shortcut_act.setShortcut(QKeySequence("Shift++"))
+        add_child_shortcut_act.triggered.connect(self._add_child_to_selected)
+        self.addAction(add_child_shortcut_act)
+
+        remove_sibling_shortcut_act = QAction(self)
+        remove_sibling_shortcut_act.setShortcut(QKeySequence("Shift+-"))
+        remove_sibling_shortcut_act.triggered.connect(self._delete_sibling_of_selected)
+        self.addAction(remove_sibling_shortcut_act)
+
     def _toggle_filters_dock(self, checked: bool):
         if checked:
             self.filter_dock.show()
@@ -351,6 +524,17 @@ class MainWindow(QMainWindow):
 
     def _rebuild_columns_menu(self):
         self.m_columns.clear()
+
+        # Always include manage actions so menu is never empty
+        add_col_act = QAction("Add custom column…", self)
+        add_col_act.triggered.connect(self._add_custom_column)
+
+        rem_col_act = QAction("Remove custom column…", self)
+        rem_col_act.triggered.connect(self._remove_custom_column)
+
+        self.m_columns.addAction(add_col_act)
+        self.m_columns.addAction(rem_col_act)
+        self.m_columns.addSeparator()
 
         for logical in range(self.proxy.columnCount()):
             key = self.model.column_key(logical)
@@ -370,15 +554,20 @@ class MainWindow(QMainWindow):
             act.triggered.connect(make_toggle(logical, key))
             self.m_columns.addAction(act)
 
-        self.m_columns.addSeparator()
+    # ---------- Expand / collapse all ----------
+    def _collapse_all(self):
+        self.view.collapseAll()
+        for node in self.model.iter_nodes_preorder():
+            if node.task:
+                self.model.set_collapsed(int(node.task["id"]), True)
+        QTimer.singleShot(0, self._update_row_action_buttons)
 
-        add_col_act = QAction("Add custom column…", self)
-        add_col_act.triggered.connect(self._add_custom_column)
-        rem_col_act = QAction("Remove custom column…", self)
-        rem_col_act.triggered.connect(self._remove_custom_column)
-
-        self.m_columns.addAction(add_col_act)
-        self.m_columns.addAction(rem_col_act)
+    def _expand_all(self):
+        self.view.expandAll()
+        for node in self.model.iter_nodes_preorder():
+            if node.task:
+                self.model.set_collapsed(int(node.task["id"]), False)
+        QTimer.singleShot(0, self._update_row_action_buttons)
 
     # ---------- Context menu + selection helpers ----------
     def _open_context_menu(self, pos):
@@ -434,26 +623,31 @@ class MainWindow(QMainWindow):
             return
 
         self.view.expand(pidx)
-        self.model.add_child_task(task_id)
+        if not self.model.add_child_task(task_id):
+            self._pending_edit_on_insert = False
+            self._show_nesting_limit_message()
 
         QTimer.singleShot(0, self._update_row_action_buttons)
 
     # ---------- Settings ----------
+    def _apply_theme_now(self):
+        self.model.apply_theme_to_app(QApplication.instance())
+        icon = self.model.current_window_icon()
+        if icon is not None:
+            self.setWindowIcon(icon)
+        self.model.refresh_due_highlights()
+
     def _open_settings(self):
         dlg = SettingsDialog(self.model.settings, self)
         if dlg.exec():
-            self.model.apply_theme_to_app(QApplication.instance())
-            icon = self.model.current_window_icon()
-            if icon is not None:
-                self.setWindowIcon(icon)
-            self.model.refresh_due_highlights()
+            self._apply_theme_now()
             QTimer.singleShot(0, self._update_row_action_buttons)
 
     def _add_custom_column(self):
         dlg = AddColumnDialog(self)
         if dlg.exec():
-            name, col_type = dlg.result_value()
-            self.model.add_custom_column(name, col_type)
+            name, col_type, list_values = dlg.result_value()
+            self.model.add_custom_column(name, col_type, list_values)
 
     def _remove_custom_column(self):
         cols = self.model.custom_columns_snapshot()
@@ -525,12 +719,8 @@ class MainWindow(QMainWindow):
 
     # ---------- Restore / save UI state ----------
     def _restore_ui_settings(self):
-        self.model.apply_theme_to_app(QApplication.instance())
-        icon = self.model.current_window_icon()
-        if icon is not None:
-            self.setWindowIcon(icon)
-
         s = self.model.settings
+
         geo = s.value("ui/geometry")
         if geo is not None:
             self.restoreGeometry(geo)
@@ -564,23 +754,22 @@ class MainWindow(QMainWindow):
         s.setValue("ui/filters_dock_visible", self.filter_dock.isVisible())
         super().closeEvent(event)
 
-    def _closeSplash(self):
-        # --- PyInstaller splash: close it ASAP (safe when not frozen) ---
-        try:
-            import pyi_splash  # provided by PyInstaller only when built with --splash
-            pyi_splash.close()
-        except Exception:
-            pass
-
 
 def main():
     app = QApplication(sys.argv)
     app.setOrganizationName("FocusTools")
-    app.setApplicationName("FocusTodo")
+    app.setApplicationName("CustomTaskManager")
 
     w = MainWindow()
     w.resize(1100, 650)
     w.show()
+
+    # Close splash again after show (covers slow first paint)
+    try:
+        import pyi_splash  # type: ignore
+        pyi_splash.close()
+    except Exception:
+        pass
 
     sys.exit(app.exec())
 

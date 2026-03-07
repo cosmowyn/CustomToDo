@@ -1,19 +1,23 @@
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QComboBox,
     QColorDialog, QFontDialog, QFileDialog, QLineEdit,
     QGroupBox, QFormLayout, QPlainTextEdit, QMessageBox,
-    QInputDialog, QScrollArea, QWidget
+    QInputDialog, QScrollArea, QWidget, QCheckBox, QSpinBox
 )
 
 from theme import ThemeManager, default_theme_dict
 
 
+BORDER_STYLES = ["solid", "dash", "dot", "dashdot", "dashdotdot"]
+
+
 def _set_color_btn(btn: QPushButton, color: str):
     btn.setText(color)
-    btn.setStyleSheet(f"background: {color}; border: 1px solid rgba(255,255,255,0.25); padding: 6px 10px;")
+    btn.setStyleSheet(f"background: {color}; border: 1px solid rgba(0,0,0,0.20); padding: 6px 10px;")
 
 
 def _font_label(font: QFont) -> str:
@@ -24,16 +28,17 @@ class SettingsDialog(QDialog):
     def __init__(self, settings, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Settings & Themes")
-        self.setMinimumSize(760, 720)
+        self.setMinimumSize(860, 800)
 
         self.tm = ThemeManager(settings)
 
         self._theme_name: str = self.tm.current_theme_name()
         self._theme: dict = self.tm.load_theme(self._theme_name)
 
+        self._border_widgets: dict[str, dict[str, dict[str, object]]] = {}
+
         root = QVBoxLayout(self)
 
-        # --- Top: theme selector + actions
         top = QHBoxLayout()
         top.addWidget(QLabel("Theme"))
         self.theme_combo = QComboBox()
@@ -59,7 +64,6 @@ class SettingsDialog(QDialog):
 
         root.addLayout(top)
 
-        # --- Scrollable editor
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         root.addWidget(scroll, 1)
@@ -70,11 +74,10 @@ class SettingsDialog(QDialog):
         self.form_root.setSpacing(10)
         scroll.setWidget(editor)
 
-        # --- Groups
         self._build_application_group()
         self._build_fonts_group()
         self._build_search_group()
-        self._build_row_action_buttons_group()  # ✅ NEW
+        self._build_row_action_buttons_group()
         self._build_window_group()
         self._build_menus_toolbar_group()
         self._build_header_group()
@@ -82,9 +85,9 @@ class SettingsDialog(QDialog):
         self._build_buttons_group()
         self._build_inputs_group()
         self._build_selection_group()
+        self._build_border_groups()
         self._build_advanced_group()
 
-        # --- Bottom buttons
         bottom = QHBoxLayout()
         bottom.addStretch(1)
         ok = QPushButton("OK")
@@ -97,7 +100,6 @@ class SettingsDialog(QDialog):
 
         self._load_theme_into_controls()
 
-    # ---------- UI building ----------
     def _mk_group(self, title: str) -> QGroupBox:
         g = QGroupBox(title)
         g.setLayout(QFormLayout())
@@ -195,7 +197,6 @@ class SettingsDialog(QDialog):
         g.layout().addRow("Clear hover background", self.search_clear_hover_bg_btn)
         g.layout().addRow("Clear pressed background", self.search_clear_pressed_bg_btn)
 
-    # ✅ NEW group
     def _build_row_action_buttons_group(self):
         g = self._mk_group("Row action buttons (+ / -)")
 
@@ -235,8 +236,6 @@ class SettingsDialog(QDialog):
         g.layout().addRow("Delete (–) hover bg", self.row_del_hover_bg_btn)
         g.layout().addRow("Delete (–) pressed bg", self.row_del_pressed_bg_btn)
 
-    # (rest of your existing SettingsDialog methods are unchanged below)
-    # ---------- Existing groups ----------
     def _build_window_group(self):
         g = self._mk_group("Window & general colors")
         self.window_bg_btn = QPushButton()
@@ -270,7 +269,7 @@ class SettingsDialog(QDialog):
         g.layout().addRow("Toolbar border", self.toolbar_border_btn)
 
     def _build_header_group(self):
-        g = self._mk_group("Header (table header) colors")
+        g = self._mk_group("Header colors")
         self.header_bg_btn = QPushButton()
         self.header_fg_btn = QPushButton()
         self.header_border_btn = QPushButton()
@@ -279,7 +278,7 @@ class SettingsDialog(QDialog):
         self.header_border_btn.clicked.connect(lambda: self._color_pick("header_border", self.header_border_btn))
         g.layout().addRow("Header background", self.header_bg_btn)
         g.layout().addRow("Header text", self.header_fg_btn)
-        g.layout().addRow("Header border", self.header_border_btn)
+        g.layout().addRow("Header default border color", self.header_border_btn)
 
     def _build_tree_group(self):
         g = self._mk_group("Tree/Table colors")
@@ -350,6 +349,57 @@ class SettingsDialog(QDialog):
         g.layout().addRow("Selection background", self.sel_bg_btn)
         g.layout().addRow("Selection text", self.sel_fg_btn)
 
+    def _build_border_groups(self):
+        self._build_border_group("Header borders", "headers")
+        self._build_border_group("Cell borders", "cells")
+        self._build_border_group("Sibling borders", "siblings")
+
+    def _build_border_group(self, title: str, section: str):
+        group = QGroupBox(title)
+        layout = QVBoxLayout(group)
+
+        self._border_widgets[section] = {}
+
+        for side in ("top", "right", "bottom", "left"):
+            row = QWidget()
+            h = QHBoxLayout(row)
+            h.setContentsMargins(0, 0, 0, 0)
+
+            enabled = QCheckBox("Enabled")
+            width = QSpinBox()
+            width.setRange(0, 20)
+            width.setSuffix(" px")
+
+            color_btn = QPushButton()
+            style_cb = QComboBox()
+            style_cb.addItems(BORDER_STYLES)
+
+            color_btn.clicked.connect(lambda _=False, s=section, sd=side, b=color_btn: self._pick_border_color(s, sd, b))
+
+            h.addWidget(QLabel(side.capitalize()))
+            h.addSpacing(8)
+            h.addWidget(enabled)
+            h.addSpacing(8)
+            h.addWidget(QLabel("Width"))
+            h.addWidget(width)
+            h.addSpacing(8)
+            h.addWidget(QLabel("Style"))
+            h.addWidget(style_cb)
+            h.addSpacing(8)
+            h.addWidget(QLabel("Color"))
+            h.addWidget(color_btn, 1)
+
+            layout.addWidget(row)
+
+            self._border_widgets[section][side] = {
+                "enabled": enabled,
+                "width": width,
+                "style": style_cb,
+                "color_btn": color_btn,
+            }
+
+        self.form_root.addWidget(group)
+
     def _build_advanced_group(self):
         g = self._mk_group("Advanced")
         self.custom_qss = QPlainTextEdit()
@@ -359,7 +409,6 @@ class SettingsDialog(QDialog):
         )
         g.layout().addRow("Custom QSS override", self.custom_qss)
 
-    # ---------- Theme load/save ----------
     def _on_theme_selected(self, name: str):
         if not name:
             return
@@ -392,6 +441,7 @@ class SettingsDialog(QDialog):
         name = (name or "").strip()
         if not name:
             return
+
         self._pull_controls_into_theme()
         self.tm.save_theme(name, self._theme)
         self.tm.set_current_theme(name)
@@ -419,17 +469,28 @@ class SettingsDialog(QDialog):
         self._save_theme()
         self.accept()
 
-    # ---------- Controls <-> theme dict ----------
     def _load_theme_into_controls(self):
         d = default_theme_dict()
         t = d
         t.update(self._theme)
         t["fonts"].update(self._theme.get("fonts", {}))
         t["colors"].update(self._theme.get("colors", {}))
+
+        tb = self._theme.get("borders", {})
+        for section in ("headers", "cells", "siblings"):
+            dsec = d["borders"].get(section, {})
+            tsec = tb.get(section, {}) if isinstance(tb.get(section, {}), dict) else {}
+            merged = {}
+            for side in ("top", "right", "bottom", "left"):
+                side_default = dict(dsec.get(side, {}))
+                side_theme = tsec.get(side, {}) if isinstance(tsec.get(side, {}), dict) else {}
+                side_default.update(side_theme)
+                merged[side] = side_default
+            t["borders"][section] = merged
+
         self._theme = t
 
         self.icon_path.setText(self._theme.get("app_icon_path", ""))
-
         self._update_font_labels()
 
         c = self._theme["colors"]
@@ -446,7 +507,6 @@ class SettingsDialog(QDialog):
         _set_color_btn(self.search_clear_hover_bg_btn, c["search_clear_hover_bg"])
         _set_color_btn(self.search_clear_pressed_bg_btn, c["search_clear_pressed_bg"])
 
-        # ✅ NEW: load row button colours
         _set_color_btn(self.row_add_bg_btn, c["row_add_bg"])
         _set_color_btn(self.row_add_fg_btn, c["row_add_fg"])
         _set_color_btn(self.row_add_border_btn, c["row_add_border"])
@@ -494,11 +554,38 @@ class SettingsDialog(QDialog):
         _set_color_btn(self.sel_bg_btn, c["sel_bg"])
         _set_color_btn(self.sel_fg_btn, c["sel_fg"])
 
+        for section in ("headers", "cells", "siblings"):
+            for side in ("top", "right", "bottom", "left"):
+                cfg = self._theme["borders"][section][side]
+                w = self._border_widgets[section][side]
+                w["enabled"].setChecked(bool(cfg.get("enabled", False)))
+                w["width"].setValue(int(cfg.get("width", 0)))
+                style_cb = w["style"]
+                style = str(cfg.get("style", "solid"))
+                idx = style_cb.findText(style)
+                style_cb.setCurrentIndex(idx if idx >= 0 else 0)
+                _set_color_btn(w["color_btn"], str(cfg.get("color", "#000000")))
+
         self.custom_qss.setPlainText(self._theme.get("custom_qss", ""))
 
     def _pull_controls_into_theme(self):
         self._theme["app_icon_path"] = self.icon_path.text().strip()
         self._theme["custom_qss"] = self.custom_qss.toPlainText()
+
+        for section in ("headers", "cells", "siblings"):
+            if "borders" not in self._theme:
+                self._theme["borders"] = {}
+            if section not in self._theme["borders"]:
+                self._theme["borders"][section] = {}
+
+            for side in ("top", "right", "bottom", "left"):
+                w = self._border_widgets[section][side]
+                self._theme["borders"][section][side] = {
+                    "enabled": bool(w["enabled"].isChecked()),
+                    "width": int(w["width"].value()),
+                    "style": str(w["style"].currentText()),
+                    "color": str(w["color_btn"].text()),
+                }
 
     def _color_pick(self, key: str, btn: QPushButton):
         chosen = QColorDialog.getColor(parent=self)
@@ -506,18 +593,23 @@ class SettingsDialog(QDialog):
             self._theme["colors"][key] = chosen.name()
             _set_color_btn(btn, chosen.name())
 
-    # ---------- Icon ----------
+    def _pick_border_color(self, section: str, side: str, btn: QPushButton):
+        chosen = QColorDialog.getColor(parent=self)
+        if chosen.isValid():
+            self._theme.setdefault("borders", {}).setdefault(section, {}).setdefault(side, {})
+            self._theme["borders"][section][side]["color"] = chosen.name()
+            _set_color_btn(btn, chosen.name())
+
     def _browse_icon(self):
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Choose application icon",
             "",
-            "Icons (*.ico *.png *.jpg *.jpeg *.bmp);;All files (*.*)",
+            "Icons (*.ico *.png *.jpg *.jpeg *.bmp *.icns);;All files (*.*)",
         )
         if path:
             self.icon_path.setText(path)
 
-    # ---------- Fonts ----------
     def _update_font_labels(self):
         from theme import _font_from_str
 

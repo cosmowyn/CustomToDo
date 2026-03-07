@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import os
 from copy import deepcopy
@@ -48,63 +50,89 @@ def _rgba(qcolor: QColor, alpha: float) -> str:
 
 
 def _ensure_contrast(bg_hex: str, fg_hex: str) -> str:
-    """If fg would be unreadable on bg, return black/white for best contrast."""
     try:
         bg = QColor(bg_hex)
         fg = QColor(fg_hex)
         if not bg.isValid() or not fg.isValid():
             return fg_hex
 
-        # relative luminance approx
         lum_bg = 0.2126 * bg.red() + 0.7152 * bg.green() + 0.0722 * bg.blue()
         lum_fg = 0.2126 * fg.red() + 0.7152 * fg.green() + 0.0722 * fg.blue()
 
         if abs(lum_bg - lum_fg) >= 120:
             return fg_hex
 
-        # choose black/white based on background
         return "#000000" if lum_bg > 150 else "#FFFFFF"
     except Exception:
         return fg_hex
 
 
+def _default_border_side(enabled: bool, width: int, color: str, style: str) -> dict:
+    return {
+        "enabled": bool(enabled),
+        "width": int(width),
+        "color": str(color),
+        "style": str(style),
+    }
+
+
+def _default_borders(colors: dict) -> dict:
+    return {
+        "headers": {
+            "top": _default_border_side(True, 1, colors["header_border"], "solid"),
+            "right": _default_border_side(True, 1, colors["header_border"], "solid"),
+            "bottom": _default_border_side(True, 1, colors["header_border"], "solid"),
+            "left": _default_border_side(True, 1, colors["header_border"], "solid"),
+        },
+        "cells": {
+            "top": _default_border_side(False, 0, colors["grid"], "solid"),
+            "right": _default_border_side(False, 0, colors["grid"], "solid"),
+            "bottom": _default_border_side(False, 0, colors["grid"], "solid"),
+            "left": _default_border_side(False, 0, colors["grid"], "solid"),
+        },
+        "siblings": {
+            "top": _default_border_side(False, 0, colors["grid"], "solid"),
+            "right": _default_border_side(False, 0, colors["grid"], "solid"),
+            "bottom": _default_border_side(True, 1, colors["grid"], "solid"),
+            "left": _default_border_side(False, 0, colors["grid"], "solid"),
+        },
+    }
+
+
 def _system_palette_colors() -> dict:
-    """
-    Build a light theme color set using the OS palette (native feel).
-    Falls back to safe light colors when palette isn't available.
-    """
     app = QApplication.instance()
     pal = app.palette() if app else QPalette()
 
-    # Base surfaces
     window_bg = _qcolor_to_hex(pal.color(QPalette.ColorRole.Window), "#F5F5F5")
     window_fg = _qcolor_to_hex(pal.color(QPalette.ColorRole.WindowText), "#111111")
     base_bg = _qcolor_to_hex(pal.color(QPalette.ColorRole.Base), "#FFFFFF")
     text_fg = _qcolor_to_hex(pal.color(QPalette.ColorRole.Text), "#111111")
 
-    # Selection
     sel_bg = _qcolor_to_hex(pal.color(QPalette.ColorRole.Highlight), "#2B6DE0")
     sel_fg = _qcolor_to_hex(pal.color(QPalette.ColorRole.HighlightedText), "#FFFFFF")
 
-    # Buttons
     btn_bg = _qcolor_to_hex(pal.color(QPalette.ColorRole.Button), "#EDEDED")
     btn_fg = _qcolor_to_hex(pal.color(QPalette.ColorRole.ButtonText), "#111111")
 
-    # Placeholder
     placeholder_fg = _qcolor_to_hex(pal.color(QPalette.ColorRole.PlaceholderText), "#666666")
 
-    # Mid/borders
     mid = pal.color(QPalette.ColorRole.Mid)
     mid_hex = _qcolor_to_hex(mid, "#C9C9C9")
 
-    # Ensure readability
     window_fg = _ensure_contrast(window_bg, window_fg)
     text_fg = _ensure_contrast(base_bg, text_fg)
     btn_fg = _ensure_contrast(btn_bg, btn_fg)
     sel_fg = _ensure_contrast(sel_bg, sel_fg)
 
-    # Slight tints for headers/alternate rows
-    header_bg = _rgba(QColor("#000000"), 0.04)  # subtle grey overlay
+    btn_disabled_fg = _ensure_contrast(
+        btn_bg,
+        _qcolor_to_hex(
+            pal.color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText),
+            "#888888",
+        ),
+    )
+
+    header_bg = _rgba(QColor("#000000"), 0.04)
     tree_alt_bg = _rgba(QColor("#000000"), 0.02)
 
     return {
@@ -137,7 +165,7 @@ def _system_palette_colors() -> dict:
         "btn_hover_bg": _rgba(QColor("#000000"), 0.06),
         "btn_pressed_bg": _rgba(QColor("#000000"), 0.10),
         "btn_disabled_bg": _rgba(QColor("#000000"), 0.03),
-        "btn_disabled_fg": _qcolor_to_hex(pal.color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText), "#888888"),
+        "btn_disabled_fg": btn_disabled_fg,
 
         "input_bg": base_bg,
         "input_fg": text_fg,
@@ -156,7 +184,6 @@ def _system_palette_colors() -> dict:
         "search_clear_hover_bg": _rgba(QColor("#000000"), 0.06),
         "search_clear_pressed_bg": _rgba(QColor("#000000"), 0.10),
 
-        # Row overlay buttons (+ / -) if you use them
         "row_add_bg": "#E7F6EC",
         "row_add_fg": _ensure_contrast("#E7F6EC", "#0D3B1E"),
         "row_add_border": "#9ED7AF",
@@ -173,7 +200,6 @@ def _system_palette_colors() -> dict:
 
 def light_theme_dict() -> dict:
     base_font = QFont()
-    # Keep system default font family; just set a sensible size if unset
     if base_font.pointSize() <= 0:
         base_font.setPointSize(10)
 
@@ -192,12 +218,12 @@ def light_theme_dict() -> dict:
             "search": _font_to_str(QFont(base_font.family(), base_font.pointSize(), QFont.Weight.Medium)),
         },
         "colors": colors,
+        "borders": _default_borders(colors),
         "custom_qss": "",
     }
 
 
 def default_theme_dict() -> dict:
-    # Default is the Light theme
     return light_theme_dict()
 
 
@@ -209,14 +235,12 @@ class ThemeManager:
     def ensure_defaults(self):
         names = self.list_themes()
 
-        # If no themes exist, create Light and set current.
         if not names:
             t = light_theme_dict()
             self.save_theme(DEFAULT_THEME_NAME, t)
             self.set_current_theme(DEFAULT_THEME_NAME)
             return
 
-        # If themes exist, ensure Light exists as an option (do not overwrite user themes)
         if "Light" not in names:
             self.save_theme("Light", light_theme_dict())
 
@@ -247,6 +271,7 @@ class ThemeManager:
             t = default_theme_dict()
             t["name"] = name
             return t
+
         try:
             t = json.loads(str(raw))
         except Exception:
@@ -269,6 +294,20 @@ class ThemeManager:
         t_colors = t.get("colors", {}) if isinstance(t.get("colors", {}), dict) else {}
         out_colors.update(t_colors)
         out["colors"] = out_colors
+
+        out_borders = out.get("borders", {})
+        t_borders = t.get("borders", {}) if isinstance(t.get("borders", {}), dict) else {}
+        for section in ("headers", "cells", "siblings"):
+            out_section = out_borders.get(section, {})
+            t_section = t_borders.get(section, {}) if isinstance(t_borders.get(section, {}), dict) else {}
+            for side in ("top", "right", "bottom", "left"):
+                out_side = out_section.get(side, {})
+                t_side = t_section.get(side, {}) if isinstance(t_section.get(side, {}), dict) else {}
+                if isinstance(out_side, dict):
+                    out_side.update(t_side)
+                    out_section[side] = out_side
+            out_borders[section] = out_section
+        out["borders"] = out_borders
 
         return out
 
@@ -311,8 +350,21 @@ class ThemeManager:
         ico = QIcon(path)
         return ico if not ico.isNull() else None
 
+    def _css_border_side(self, side_cfg: dict) -> str:
+        enabled = bool(side_cfg.get("enabled", False))
+        width = int(side_cfg.get("width", 0))
+        color = str(side_cfg.get("color", "#000000"))
+        style = str(side_cfg.get("style", "solid"))
+
+        if not enabled or width <= 0:
+            return "0px none transparent"
+        return f"{width}px {style} {color}"
+
     def _build_stylesheet(self, theme: dict) -> str:
         c = theme["colors"]
+        b = theme.get("borders", {})
+
+        hb = b.get("headers", {})
 
         base_font = _font_from_str(theme["fonts"].get("base", ""), QFont())
         header_font = _font_from_str(theme["fonts"].get("header", ""), base_font)
@@ -351,8 +403,12 @@ class ThemeManager:
         }}
 
         QHeaderView::section {{
-            background: {c["header_bg"]}; color: {c["header_fg"]};
-            border: 1px solid {c["header_border"]};
+            background: {c["header_bg"]};
+            color: {c["header_fg"]};
+            border-top: {self._css_border_side(hb.get("top", {}))};
+            border-right: {self._css_border_side(hb.get("right", {}))};
+            border-bottom: {self._css_border_side(hb.get("bottom", {}))};
+            border-left: {self._css_border_side(hb.get("left", {}))};
             padding: 6px;
             {_font_css(header_font)}
         }}
@@ -402,7 +458,6 @@ class ThemeManager:
         QToolButton#SearchClear:hover {{ background: {c["search_clear_hover_bg"]}; }}
         QToolButton#SearchClear:pressed {{ background: {c["search_clear_pressed_bg"]}; }}
 
-        /* Row overlay buttons (if used) */
         QToolButton#RowAddChildButton {{
             background: {c["row_add_bg"]};
             color: {c["row_add_fg"]};

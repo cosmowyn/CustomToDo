@@ -20,9 +20,20 @@ class AddColumnDialog(QDialog):
         row2 = QHBoxLayout()
         row2.addWidget(QLabel("Type"))
         self.typ = QComboBox()
-        self.typ.addItems(["text", "int", "date", "bool"])
+        self.typ.addItems(["text", "int", "date", "bool", "list"])
         row2.addWidget(self.typ)
         v.addLayout(row2)
+
+        row3 = QHBoxLayout()
+        self._list_label = QLabel("List values")
+        row3.addWidget(self._list_label)
+        self.list_values = QLineEdit()
+        self.list_values.setPlaceholderText("Comma-separated values (optional)")
+        row3.addWidget(self.list_values)
+        v.addLayout(row3)
+
+        self.typ.currentTextChanged.connect(self._update_type_ui)
+        self._update_type_ui(self.typ.currentText())
 
         btns = QHBoxLayout()
         btns.addStretch(1)
@@ -34,8 +45,23 @@ class AddColumnDialog(QDialog):
         btns.addWidget(cancel)
         v.addLayout(btns)
 
+    def _update_type_ui(self, col_type: str):
+        is_list = str(col_type) == "list"
+        self._list_label.setVisible(is_list)
+        self.list_values.setVisible(is_list)
+
     def result_value(self):
-        return self.name.text().strip(), self.typ.currentText()
+        raw = self.list_values.text().strip()
+        values = []
+        if raw:
+            seen = set()
+            for part in raw.split(","):
+                s = part.strip()
+                if not s or s in seen:
+                    continue
+                seen.add(s)
+                values.append(s)
+        return self.name.text().strip(), self.typ.currentText(), values
 
 
 class RemoveColumnDialog(QDialog):
