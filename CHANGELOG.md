@@ -6,22 +6,25 @@ The format is inspired by Keep a Changelog and uses straightforward dated entrie
 
 ## [Unreleased]
 
+No unreleased entries yet.
+
+## [1.0.0] - 2026-03-08
+
 ### Added
 
-- Production hardening features including crash logging, diagnostics, integrity checks, migration validation, restore-point reporting, and centralized app version metadata
-- Workflow assistance features including a weekly review assistant, focus mode, onboarding/welcome flow, modular demo dataset generation, and expanded embedded help
+- Production hardening features including crash logging, diagnostics, integrity checks, migration validation, restore-point reporting, centralized app version metadata, and an in-app application log viewer
+- Workflow assistance features including a weekly review assistant, focus mode, onboarding/welcome flow, modular demo dataset generation, floating-table support, and expanded embedded help
 - Project intelligence features including next-action analysis, stalled/blocked reasoning, workload warnings, scheduling hints, relationship inspection, and stronger project summaries
-- Capture and interaction improvements including quick capture, tray integration, richer inline quick-add parsing, and reusable capture command routing
-- Advanced workspace and history tooling including portable workspace profiles, snapshot history browsing, safe restore-to-copy flows, and workspace-aware backups
-- Additional UI modules and tests covering core database, model, backup/import, diagnostics, filtering, demo generation, workspace behavior, and project logic
+- Capture and interaction improvements including quick capture, tray integration, richer inline quick-add parsing, platform-aware shortcuts, and reusable capture command routing
+- Advanced workspace and history tooling including portable workspace profiles, snapshot history browsing, safe restore-to-copy flows, safe removal flows for templates, workspaces, and snapshots, and workspace-aware backups
+- Additional UI modules, a higher-resolution application icon asset for high-DPI packaging, and automated tests covering core database, model, backup/import, diagnostics, filtering, demo generation, workspace behavior, and project logic
 
 ### Changed
 
-- Repository hygiene, documentation, legal, and CI scaffolding prepared for a public GitHub release
 - Main application workflows, side panels, command/help surfaces, and filtering logic were expanded to expose the new review, focus, diagnostics, relationship, and workspace capabilities
-- Pytest-based automated coverage was extended and the remaining Qt filter deprecation warnings were removed from the test run
+- Repository hygiene, documentation, legal, and CI scaffolding were prepared for public GitHub use and updated to reflect the current app scope
+- Pytest-based automated coverage was extended, CI runtime issues were corrected, and local signing artifacts are ignored in Git on the stable branch
 - Style-only PEP 8 cleanup applied to selected UI/helper modules with no intended functional changes
-- Saved templates, workspace profiles, and snapshot history gained explicit permanent-removal flows with confirmation, database-file safety checks, and safer database closing during window shutdown
 
 ## [0.1.0] - 2026-03-07
 
