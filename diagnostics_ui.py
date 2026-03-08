@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from auto_backup import create_versioned_backup
+from crash_logging import log_event, log_exception
 from diagnostics import build_diagnostics_report
 from ui_layout import add_form_row, add_left_aligned_buttons, configure_box_layout, configure_form_layout
 
@@ -222,18 +223,38 @@ class DiagnosticsDialog(QDialog):
         try:
             snapshot_path = create_versioned_backup(self._db, "repair")
         except Exception as e:
+            log_exception(e, context="diagnostics.repair.snapshot", db_path=getattr(self._db, "path", None))
             QMessageBox.warning(self, "Snapshot failed", f"Could not create a pre-repair snapshot.\n\n{e}")
             return
 
         try:
+            log_event(
+                "Integrity repair started",
+                context="diagnostics.repair",
+                db_path=getattr(self._db, "path", None),
+                details={"snapshot_path": str(snapshot_path), "queued_actions": int(total)},
+            )
             result = self._db.repair_integrity_issues(report=report.get("integrity"))
         except Exception as e:
+            log_exception(e, context="diagnostics.repair", db_path=getattr(self._db, "path", None))
             QMessageBox.critical(
                 self,
                 "Repair failed",
                 f"Integrity repair failed.\n\nSnapshot kept at:\n{snapshot_path}\n\n{e}",
             )
             return
+        log_event(
+            "Integrity repair completed",
+            context="diagnostics.repair",
+            db_path=getattr(self._db, "path", None),
+            details={
+                "snapshot_path": str(snapshot_path),
+                "remaining_issue_count": int(result.get("remaining_issue_count") or 0),
+                "reset_broken_parent_links": int(result.get("reset_broken_parent_links") or 0),
+                "normalized_sort_order_groups": int(result.get("normalized_sort_order_groups") or 0),
+                "deleted_orphaned_custom_values": int(result.get("deleted_orphaned_custom_values") or 0),
+            },
+        )
 
         lines = [
             f"Pre-repair snapshot: {snapshot_path}",

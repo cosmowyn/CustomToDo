@@ -10,6 +10,7 @@ from typing import Any, Optional
 
 from PySide6.QtWidgets import QFileDialog, QMessageBox, QWidget
 
+from crash_logging import log_event, log_exception
 from db import Database, now_iso
 
 
@@ -44,8 +45,20 @@ def export_backup_ui(parent: QWidget, db: Database) -> None:
         if not out_path:
             return
 
+        log_event(
+            "Backup export started",
+            context="backup.export",
+            db_path=getattr(db, "path", None),
+            details={"target_path": out_path},
+        )
         payload = export_payload(db)
         write_backup_file(Path(out_path), payload)
+        log_event(
+            "Backup export completed",
+            context="backup.export",
+            db_path=getattr(db, "path", None),
+            details={"target_path": out_path, "task_count": len(payload.get("tasks") or [])},
+        )
 
         QMessageBox.information(
             parent,
@@ -53,6 +66,7 @@ def export_backup_ui(parent: QWidget, db: Database) -> None:
             f"Backup exported successfully.\n\nFile:\n{out_path}",
         )
     except Exception as e:
+        log_exception(e, context="backup.export", db_path=getattr(db, "path", None))
         QMessageBox.critical(
             parent,
             "Backup export failed",
@@ -80,12 +94,29 @@ def import_backup_ui(parent: QWidget) -> None:
         if not target_db_path:
             return
 
+        log_event(
+            "Backup import started",
+            context="backup.import",
+            details={"source_path": backup_path, "target_db_path": target_db_path},
+        )
         payload = read_backup_file(Path(backup_path), parent=parent)
         report = import_payload_into_dbfile(
             parent=parent,
             payload=payload,
             target_db_path=Path(target_db_path),
             make_file_backup=True,
+        )
+        log_event(
+            "Backup import completed",
+            context="backup.import",
+            db_path=str(target_db_path),
+            details={
+                "source_path": backup_path,
+                "target_db_path": target_db_path,
+                "mode": str(report.mode or ""),
+                "imported_tasks": int(report.imported_tasks or 0),
+                "created_columns": int(report.created_columns or 0),
+            },
         )
 
         QMessageBox.information(
@@ -95,6 +126,7 @@ def import_backup_ui(parent: QWidget) -> None:
         )
 
     except Exception as e:
+        log_exception(e, context="backup.import")
         QMessageBox.critical(
             parent,
             "Backup import failed",

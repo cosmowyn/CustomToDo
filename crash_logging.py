@@ -5,10 +5,11 @@ import platform
 import sys
 import threading
 import traceback
+import json
 from datetime import datetime
 from pathlib import Path
 from types import TracebackType
-from typing import Callable
+from typing import Any, Callable
 
 from app_metadata import APP_NAME, APP_PROFILE, APP_VERSION
 from app_paths import app_data_dir
@@ -26,6 +27,31 @@ def logs_dir() -> Path:
 def current_log_path() -> Path:
     ts = datetime.now().strftime("%Y-%m-%d")
     return logs_dir() / f"{APP_NAME.lower()}_{ts}.log"
+
+
+def list_log_paths(limit: int = 20) -> list[Path]:
+    try:
+        files = sorted(
+            logs_dir().glob(f"{APP_NAME.lower()}_*.log"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+    except Exception:
+        return []
+    return files[: max(1, int(limit or 20))]
+
+
+def read_log_text(path: str | Path, max_bytes: int = 512_000) -> str:
+    try:
+        raw = Path(path).read_bytes()
+    except Exception:
+        return ""
+    if max_bytes and len(raw) > int(max_bytes):
+        raw = raw[-int(max_bytes) :]
+    try:
+        return raw.decode("utf-8", errors="replace")
+    except Exception:
+        return ""
 
 
 def environment_snapshot(db_path: str | None = None) -> dict:
@@ -53,6 +79,7 @@ def _format_exception_block(
     lines = [
         "=" * 72,
         f"timestamp: {datetime.now().isoformat(sep=' ', timespec='seconds')}",
+        "entry_type: exception",
         f"context: {context or 'runtime'}",
         f"exception_type: {getattr(exc_type, '__name__', type(exc_value).__name__)}",
         f"message: {exc_value}",
@@ -62,6 +89,59 @@ def _format_exception_block(
     lines.append("traceback:")
     lines.extend(traceback.format_exception(exc_type or type(exc_value), exc_value, exc_tb))
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _format_event_block(
+    *,
+    level: str,
+    context: str,
+    message: str,
+    db_path: str | None,
+    details: dict[str, Any] | None = None,
+) -> str:
+    lines = [
+        "=" * 72,
+        f"timestamp: {datetime.now().isoformat(sep=' ', timespec='seconds')}",
+        "entry_type: event",
+        f"level: {str(level or 'INFO').upper()}",
+        f"context: {context or 'runtime'}",
+        f"message: {message or ''}",
+    ]
+    for key, value in environment_snapshot(db_path=db_path).items():
+        lines.append(f"{key}: {value}")
+    if details:
+        lines.append("details:")
+        try:
+            lines.append(json.dumps(details, ensure_ascii=False, sort_keys=True, indent=2))
+        except Exception:
+            lines.append(repr(details))
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def write_event_log(
+    *,
+    level: str = "INFO",
+    context: str = "runtime",
+    message: str,
+    db_path: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> Path | None:
+    try:
+        path = current_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(
+                _format_event_block(
+                    level=level,
+                    context=context,
+                    message=message,
+                    db_path=db_path,
+                    details=details,
+                )
+            )
+        return path
+    except Exception:
+        return None
 
 
 def write_exception_log(
@@ -84,6 +164,17 @@ def write_exception_log(
 
 def log_exception(exc: BaseException, *, context: str = "runtime", db_path: str | None = None) -> Path | None:
     return write_exception_log(type(exc), exc, exc.__traceback__, context=context, db_path=db_path)
+
+
+def log_event(
+    message: str,
+    *,
+    context: str = "runtime",
+    level: str = "INFO",
+    db_path: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> Path | None:
+    return write_event_log(level=level, context=context, message=message, db_path=db_path, details=details)
 
 
 def install_exception_hooks(db_path_provider: Callable[[], str | None] | None = None) -> None:

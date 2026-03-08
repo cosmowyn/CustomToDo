@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from auto_backup import backups_dir, list_restore_points
 from backup_io import import_payload_into_dbfile, read_backup_file
+from crash_logging import log_event, log_exception
 from ui_layout import add_left_aligned_buttons, configure_box_layout
 from workspace_profiles import WorkspaceProfileManager
 
@@ -159,11 +160,29 @@ class SnapshotHistoryDialog(QDialog):
         if not target_path:
             return
         try:
+            log_event(
+                "Snapshot restore to database copy started",
+                context="snapshot.restore_copy",
+                db_path=getattr(self._db, "path", None),
+                details={"snapshot_path": str(row.get("path") or ""), "target_path": target_path},
+            )
             payload = read_backup_file(Path(str(row.get("path") or "")), parent=self)
             report = import_payload_into_dbfile(self, payload, Path(target_path), make_file_backup=True)
         except Exception as e:
+            log_exception(e, context="snapshot.restore_copy", db_path=getattr(self._db, "path", None))
             QMessageBox.critical(self, "Snapshot restore failed", str(e))
             return
+        log_event(
+            "Snapshot restore to database copy completed",
+            context="snapshot.restore_copy",
+            db_path=target_path,
+            details={
+                "snapshot_path": str(row.get("path") or ""),
+                "target_path": target_path,
+                "mode": str(report.mode or ""),
+                "imported_tasks": int(report.imported_tasks or 0),
+            },
+        )
         QMessageBox.information(
             self,
             "Snapshot restored",
@@ -184,6 +203,12 @@ class SnapshotHistoryDialog(QDialog):
         workspace_id = None
         record = None
         try:
+            log_event(
+                "Workspace creation from snapshot started",
+                context="snapshot.create_workspace",
+                db_path=getattr(self._db, "path", None),
+                details={"snapshot_path": str(row.get("path") or ""), "workspace_name": str(name).strip()},
+            )
             suggested = self._workspace_manager.suggested_db_path(str(name).strip())
             payload = read_backup_file(Path(str(row.get("path") or "")), parent=self)
             record = self._workspace_manager.create_workspace(str(name).strip(), db_path=suggested)
@@ -195,8 +220,20 @@ class SnapshotHistoryDialog(QDialog):
                     self._workspace_manager.remove_workspace(workspace_id)
                 except Exception:
                     pass
+            log_exception(e, context="snapshot.create_workspace", db_path=getattr(self._db, "path", None))
             QMessageBox.critical(self, "Workspace creation failed", str(e))
             return
+        log_event(
+            "Workspace creation from snapshot completed",
+            context="snapshot.create_workspace",
+            db_path=str(record.get("db_path") or ""),
+            details={
+                "snapshot_path": str(row.get("path") or ""),
+                "workspace_id": str(record.get("id") or ""),
+                "workspace_name": str(record.get("name") or ""),
+                "imported_tasks": int(report.imported_tasks or 0),
+            },
+        )
 
         res = QMessageBox.question(
             self,

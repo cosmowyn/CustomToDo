@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 
 from app_paths import app_db_path, app_data_dir
 from app_metadata import APP_NAME, APP_ORGANIZATION, APP_VERSION, app_display_version
-from crash_logging import install_exception_hooks, log_exception
+from crash_logging import install_exception_hooks, log_event, log_exception
 from db import Database, DatabaseMigrationError
 from model import TaskTreeModel, STATUSES
 from delegates import install_delegates
@@ -54,6 +54,7 @@ from template_params import collect_template_placeholders, apply_template_values
 from template_vars_ui import TemplateVariablesDialog
 from analytics_ui import AnalyticsPanel
 from diagnostics_ui import DiagnosticsDialog
+from log_viewer_ui import LogViewerDialog
 from quick_capture_ui import QuickCaptureDialog
 from relationships_ui import RelationshipsPanel
 from snapshot_history_ui import SnapshotHistoryDialog
@@ -105,6 +106,7 @@ class MainWindow(QMainWindow):
         self._quick_capture_dialog: QuickCaptureDialog | None = None
         self._workspace_dialog: WorkspaceManagerDialog | None = None
         self._snapshot_dialog: SnapshotHistoryDialog | None = None
+        self._log_viewer_dialog: LogViewerDialog | None = None
         self._tray_icon: QSystemTrayIcon | None = None
         self._global_capture_hotkey = None
         self._reminder_mode = str(
@@ -1595,6 +1597,12 @@ class MainWindow(QMainWindow):
             rotate_backups(max_keep=int(keep or 20), db_path=self.db.path)
             self.model.settings.setValue("backup/last_snapshot_path", str(path))
             self.model.settings.setValue("backup/last_snapshot_at", datetime.now().isoformat(timespec="seconds"))
+            log_event(
+                "Automatic snapshot created",
+                context="backup.auto",
+                db_path=self.db.path,
+                details={"path": str(path), "keep_count": int(keep or 20)},
+            )
         except Exception as e:
             log_exception(e, context="auto-backup", db_path=self.db.path)
             # Intentionally silent; backup failures should not interrupt app flow.
@@ -1642,6 +1650,16 @@ class MainWindow(QMainWindow):
         self.model.settings.setValue("backup/keep_count", int(new_keep))
         self.model.settings.setValue("backup/on_close", keep_close == "Yes")
         self._configure_auto_backup_timer()
+        log_event(
+            "Automatic backup settings updated",
+            context="backup.settings",
+            db_path=self.db.path,
+            details={
+                "interval_minutes": int(new_mins),
+                "keep_count": int(new_keep),
+                "backup_on_close": bool(keep_close == "Yes"),
+            },
+        )
 
     def _create_backup_now(self):
         try:
@@ -1650,6 +1668,12 @@ class MainWindow(QMainWindow):
             rotate_backups(max_keep=int(keep or 20), db_path=self.db.path)
             self.model.settings.setValue("backup/last_snapshot_path", str(path))
             self.model.settings.setValue("backup/last_snapshot_at", datetime.now().isoformat(timespec="seconds"))
+            log_event(
+                "Manual snapshot created",
+                context="backup.manual",
+                db_path=self.db.path,
+                details={"path": str(path), "keep_count": int(keep or 20)},
+            )
             QMessageBox.information(self, "Backup created", f"Snapshot saved to:\n{path}")
         except Exception as e:
             log_exception(e, context="manual-backup", db_path=self.db.path)
@@ -1667,6 +1691,26 @@ class MainWindow(QMainWindow):
         target_workspace_id = dlg.switch_workspace_id()
         if target_workspace_id:
             self._switch_to_workspace(str(target_workspace_id))
+
+    def _export_backup_data(self):
+        log_event("Backup export opened", context="backup.export", db_path=self.db.path)
+        export_backup_ui(self, self.db)
+
+    def _import_backup_data(self):
+        log_event("Backup import opened", context="backup.import", db_path=self.db.path)
+        import_backup_ui(self)
+
+    def _export_themes(self):
+        log_event("Theme export opened", context="theme.export", db_path=self.db.path)
+        export_themes_ui(self, self.model.settings)
+
+    def _import_themes(self):
+        log_event("Theme import opened", context="theme.import", db_path=self.db.path)
+        import_themes_ui(
+            self,
+            self.model.settings,
+            apply_callback=lambda: self._apply_theme_now(),
+        )
 
     def _save_ui_settings(self):
         s = self.model.settings
@@ -1692,12 +1736,24 @@ class MainWindow(QMainWindow):
         if not target_id or target_id == self.workspace_id:
             return
         try:
+            log_event(
+                "Workspace switch requested",
+                context="workspace.switch",
+                db_path=self.db.path,
+                details={"from_workspace": self.workspace_id, "to_workspace": target_id},
+            )
             self._save_ui_settings()
             self._workspace_switching = True
             self.workspace_manager.set_current_workspace(target_id, apply_state=True)
             replacement = MainWindow(self.workspace_manager, target_id)
             self._replacement_window = replacement
             replacement.show()
+            log_event(
+                "Workspace switch completed",
+                context="workspace.switch",
+                db_path=self.db.path,
+                details={"from_workspace": self.workspace_id, "to_workspace": target_id},
+            )
             self.close()
         except Exception as e:
             self._workspace_switching = False
@@ -1900,6 +1956,13 @@ class MainWindow(QMainWindow):
                 self._open_diagnostics_dialog,
             ),
             PaletteCommand(
+                "ui.open_log_viewer",
+                "Open application log",
+                "View crash entries and operation log history",
+                ("log", "logs", "errors", "troubleshooting"),
+                self._open_log_viewer_dialog,
+            ),
+            PaletteCommand(
                 "help.quick_start",
                 "Open quick start",
                 "Show the welcome/onboarding guide",
@@ -1950,15 +2013,15 @@ class MainWindow(QMainWindow):
             ),
             PaletteCommand("ui.focus_search", "Focus search", "Move cursor to search box", ("search", "find"), lambda: self.search.setFocus()),
             PaletteCommand("ui.focus_quick_add", "Focus quick add", "Move cursor to quick-add input", ("quick add", "capture"), lambda: self.quick_add.setFocus()),
-            PaletteCommand("backup.export_data", "Export backup data", "Open data export dialog", ("backup", "export"), lambda: export_backup_ui(self, self.db)),
-            PaletteCommand("backup.import_data", "Import backup data", "Open data import dialog", ("backup", "import"), lambda: import_backup_ui(self)),
-            PaletteCommand("theme.export", "Export themes", "Open theme export dialog", ("theme", "export"), lambda: export_themes_ui(self, self.model.settings)),
+            PaletteCommand("backup.export_data", "Export backup data", "Open data export dialog", ("backup", "export"), self._export_backup_data),
+            PaletteCommand("backup.import_data", "Import backup data", "Open data import dialog", ("backup", "import"), self._import_backup_data),
+            PaletteCommand("theme.export", "Export themes", "Open theme export dialog", ("theme", "export"), self._export_themes),
             PaletteCommand(
                 "theme.import",
                 "Import themes",
                 "Open theme import dialog",
                 ("theme", "import"),
-                lambda: import_themes_ui(self, self.model.settings, apply_callback=lambda: self._apply_theme_now()),
+                self._import_themes,
             ),
         ]
 
@@ -2201,6 +2264,14 @@ class MainWindow(QMainWindow):
         self._diagnostics_dialog.raise_()
         self._diagnostics_dialog.activateWindow()
 
+    def _open_log_viewer_dialog(self):
+        if self._log_viewer_dialog is None:
+            self._log_viewer_dialog = LogViewerDialog(self)
+        self._log_viewer_dialog.refresh()
+        self._log_viewer_dialog.show()
+        self._log_viewer_dialog.raise_()
+        self._log_viewer_dialog.activateWindow()
+
     def _workspace_data_path(self) -> str:
         try:
             return str(Path(self.workspace_db_path).expanduser().resolve().parent)
@@ -2270,6 +2341,12 @@ class MainWindow(QMainWindow):
             log_exception(e, context="demo-data-load", db_path=self.db.path)
             QMessageBox.warning(self, "Demo data not loaded", str(e))
             return
+        log_event(
+            "Demo dataset loaded into current workspace",
+            context="demo.load",
+            db_path=self.db.path,
+            details={"task_count": int(summary.get("task_count") or 0)},
+        )
 
         self.model.reload_all(reset_header_state=False)
         self._set_perspective_by_key("all")
@@ -2294,6 +2371,16 @@ class MainWindow(QMainWindow):
             return
         workspace = result.get("workspace") or {}
         summary = result.get("summary") or {}
+        log_event(
+            "Demo workspace created",
+            context="demo.workspace",
+            db_path=self.db.path,
+            details={
+                "workspace_id": str(workspace.get("id") or ""),
+                "workspace_name": str(workspace.get("name") or ""),
+                "task_count": int(summary.get("task_count") or 0),
+            },
+        )
         self.statusBar().showMessage(
             f"Created demo workspace '{str(workspace.get('name') or '')}' with {int(summary.get('task_count') or 0)} tasks.",
             3500,
@@ -2558,6 +2645,9 @@ class MainWindow(QMainWindow):
         diagnostics_act = QAction("Diagnostics…", self)
         diagnostics_act.triggered.connect(self._open_diagnostics_dialog)
 
+        log_viewer_act = QAction("Application log…", self)
+        log_viewer_act.triggered.connect(self._open_log_viewer_dialog)
+
         snapshot_history_act = QAction("Snapshot history…", self)
         snapshot_history_act.triggered.connect(self._open_snapshot_history_dialog)
 
@@ -2610,27 +2700,21 @@ class MainWindow(QMainWindow):
         m_backup = m_file.addMenu("Backup")
 
         export_db_act = QAction("Export Data…", self)
-        export_db_act.triggered.connect(lambda: export_backup_ui(self, self.db))
+        export_db_act.triggered.connect(self._export_backup_data)
         m_backup.addAction(export_db_act)
 
         import_db_act = QAction("Import Data…", self)
-        import_db_act.triggered.connect(lambda: import_backup_ui(self))
+        import_db_act.triggered.connect(self._import_backup_data)
         m_backup.addAction(import_db_act)
 
         m_backup.addSeparator()
 
         export_theme_act = QAction("Export Themes…", self)
-        export_theme_act.triggered.connect(lambda: export_themes_ui(self, self.model.settings))
+        export_theme_act.triggered.connect(self._export_themes)
         m_backup.addAction(export_theme_act)
 
         import_theme_act = QAction("Import Themes…", self)
-        import_theme_act.triggered.connect(
-            lambda: import_themes_ui(
-                self,
-                self.model.settings,
-                apply_callback=lambda: self._apply_theme_now(),
-            )
-        )
+        import_theme_act.triggered.connect(self._import_themes)
         m_backup.addAction(import_theme_act)
 
         m_backup.addSeparator()
@@ -2674,6 +2758,7 @@ class MainWindow(QMainWindow):
         m_view.addAction(toggle_calendar_act)
         m_view.addAction(toggle_review_act)
         m_view.addAction(toggle_analytics_act)
+        m_view.addAction(log_viewer_act)
         m_view.addSeparator()
 
         m_saved_views = m_view.addMenu("Saved filter views")
@@ -2716,6 +2801,7 @@ class MainWindow(QMainWindow):
         m_tools.addAction(onboarding_act)
         m_tools.addSeparator()
         m_tools.addAction(diagnostics_act)
+        m_tools.addAction(log_viewer_act)
         m_tools.addSeparator()
         m_tools.addAction(save_template_act)
         m_tools.addAction(create_template_act)
@@ -2731,6 +2817,7 @@ class MainWindow(QMainWindow):
         m_help.addAction(help_templates_act)
         m_help.addAction(help_shortcuts_act)
         m_help.addAction(diagnostics_act)
+        m_help.addAction(log_viewer_act)
         m_help.addAction(snapshot_history_act)
         m_help.addSeparator()
         m_help.addAction(toggle_tooltips_act)
@@ -2794,6 +2881,7 @@ class MainWindow(QMainWindow):
         self.addAction(toggle_relationships_act)
         self.addAction(onboarding_act)
         self.addAction(diagnostics_act)
+        self.addAction(log_viewer_act)
         self.addAction(snapshot_history_act)
         self.addAction(workspace_profiles_act)
         self.addAction(browse_archive_act)
@@ -2851,6 +2939,7 @@ class MainWindow(QMainWindow):
             (help_templates_act, "Jump straight to template placeholder help."),
             (help_shortcuts_act, "Jump straight to keyboard shortcuts help."),
             (diagnostics_act, "Inspect database health, restore-point availability, and repair options."),
+            (log_viewer_act, "Open the application log viewer for crash entries and operation history."),
             (toggle_tooltips_act, "Turn interface tooltips on or off."),
             (reminder_mode_normal_act, "Show all due reminders."),
             (reminder_mode_mute_act, "Suppress all reminder popups."),
@@ -3600,6 +3689,12 @@ class MainWindow(QMainWindow):
                 rotate_backups(max_keep=int(keep or 20), db_path=self.db.path)
                 s.setValue("backup/last_snapshot_path", str(path))
                 s.setValue("backup/last_snapshot_at", datetime.now().isoformat(timespec="seconds"))
+                log_event(
+                    "Close snapshot created",
+                    context="backup.close",
+                    db_path=self.db.path,
+                    details={"path": str(path), "keep_count": int(keep or 20)},
+                )
             except Exception as e:
                 log_exception(e, context="close-backup", db_path=self.db.path)
                 pass
@@ -3614,6 +3709,7 @@ def main():
         app.setOrganizationName(APP_ORGANIZATION)
         app.setApplicationName(APP_NAME)
         app.setApplicationVersion(APP_VERSION)
+        log_event("Application startup requested", context="startup.begin", db_path=app_db_path())
 
         workspace_manager = WorkspaceProfileManager()
         current_workspace = workspace_manager.current_workspace()
@@ -3625,6 +3721,12 @@ def main():
         w = MainWindow(workspace_manager, str(current_workspace.get("id") or "default"))
         w.resize(1100, 650)
         w.show()
+        log_event(
+            "Application main window shown",
+            context="startup.ready",
+            db_path=current_db_path(),
+            details={"workspace_id": str(current_workspace.get("id") or "default")},
+        )
 
         # Close splash again after show (covers slow first paint)
         try:

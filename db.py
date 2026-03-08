@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from app_paths import app_data_dir
+from crash_logging import log_event
 from project_intelligence import analyze_projects, analyze_workload
 
 
@@ -145,6 +146,12 @@ class Database:
                     backup_conn.close()
                 except Exception:
                     pass
+        log_event(
+            "Pre-migration backup created",
+            context="db.migration.backup",
+            db_path=self.path,
+            details={"from_version": int(from_version), "to_version": int(to_version), "backup_path": str(dest)},
+        )
         return str(dest)
 
     def _validate_schema(self, expected_version: int = LATEST_SCHEMA_VERSION) -> dict:
@@ -220,6 +227,13 @@ class Database:
             self._pre_migration_backup_path = self._create_pre_migration_backup(start_version, LATEST_SCHEMA_VERSION)
 
         try:
+            if start_version < LATEST_SCHEMA_VERSION:
+                log_event(
+                    "Database migration started",
+                    context="db.migration",
+                    db_path=self.path,
+                    details={"from_version": int(start_version), "to_version": int(LATEST_SCHEMA_VERSION)},
+                )
             self._migrate()
             validation = self._validate_schema(expected_version=LATEST_SCHEMA_VERSION)
             if not validation["ok"]:
@@ -227,6 +241,17 @@ class Database:
                 if self._pre_migration_backup_path:
                     message += f"\nPre-migration backup: {self._pre_migration_backup_path}"
                 raise DatabaseMigrationError(message)
+            if start_version < LATEST_SCHEMA_VERSION:
+                log_event(
+                    "Database migration completed",
+                    context="db.migration",
+                    db_path=self.path,
+                    details={
+                        "from_version": int(start_version),
+                        "to_version": int(LATEST_SCHEMA_VERSION),
+                        "pre_migration_backup_path": self._pre_migration_backup_path or "",
+                    },
+                )
         except DatabaseMigrationError:
             raise
         except Exception as e:

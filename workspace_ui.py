@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from crash_logging import log_event, log_exception
 from ui_layout import add_form_row, add_left_aligned_buttons, configure_box_layout, configure_form_layout
 from workspace_profiles import WorkspaceProfileManager
 
@@ -141,8 +142,15 @@ class WorkspaceManagerDialog(QDialog):
         try:
             row = self._manager.create_workspace(str(name).strip())
         except Exception as e:
+            log_exception(e, context="workspace.create")
             QMessageBox.warning(self, "Workspace creation failed", str(e))
             return
+        log_event(
+            "Workspace created",
+            context="workspace.create",
+            db_path=str(row.get("db_path") or ""),
+            details={"workspace_id": str(row.get("id") or ""), "workspace_name": str(row.get("name") or "")},
+        )
         self.refresh()
         target_id = str(row.get("id") or "")
         for i in range(self.list.count()):
@@ -167,8 +175,15 @@ class WorkspaceManagerDialog(QDialog):
         try:
             row = self._manager.create_workspace(str(name).strip(), db_path=path)
         except Exception as e:
+            log_exception(e, context="workspace.register_existing", db_path=path)
             QMessageBox.warning(self, "Workspace registration failed", str(e))
             return
+        log_event(
+            "Existing database registered as workspace",
+            context="workspace.register_existing",
+            db_path=path,
+            details={"workspace_id": str(row.get("id") or ""), "workspace_name": str(row.get("name") or "")},
+        )
         self.refresh()
         target_id = str(row.get("id") or "")
         for i in range(self.list.count()):
@@ -189,5 +204,10 @@ class WorkspaceManagerDialog(QDialog):
         workspace_id = self.selected_workspace_id()
         if not workspace_id:
             return
+        log_event(
+            "Workspace switch selected from manager",
+            context="workspace.switch.select",
+            details={"workspace_id": workspace_id},
+        )
         self._switch_workspace_id = workspace_id
         self.accept()

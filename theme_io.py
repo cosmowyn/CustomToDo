@@ -9,6 +9,7 @@ from typing import Callable, Optional
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QFileDialog, QMessageBox, QWidget
 
+from crash_logging import log_event, log_exception
 
 THEME_FORMAT_VERSION = 1
 
@@ -36,8 +37,18 @@ def export_themes_ui(parent: QWidget, settings: QSettings) -> None:
         if not out_path:
             return
 
+        log_event(
+            "Theme export started",
+            context="theme.export",
+            details={"target_path": out_path},
+        )
         payload = export_themes_payload(settings)
         write_json_atomic(Path(out_path), payload)
+        log_event(
+            "Theme export completed",
+            context="theme.export",
+            details={"target_path": out_path, "theme_count": len(payload.get("themes") or {})},
+        )
 
         QMessageBox.information(
             parent,
@@ -45,6 +56,7 @@ def export_themes_ui(parent: QWidget, settings: QSettings) -> None:
             f"Themes exported successfully.\n\nFile:\n{out_path}",
         )
     except Exception as e:
+        log_exception(e, context="theme.export")
         QMessageBox.critical(parent, "Theme export failed", _fmt_exc("Export failed", e))
 
 
@@ -72,6 +84,11 @@ def import_themes_ui(
         if not in_path:
             return
 
+        log_event(
+            "Theme import started",
+            context="theme.import",
+            details={"source_path": in_path},
+        )
         payload = read_themes_file(Path(in_path), parent=parent)
         report = import_themes_payload(parent, settings, payload)
 
@@ -86,8 +103,22 @@ def import_themes_ui(
             "Themes imported",
             _fmt_import_report(report),
         )
+        log_event(
+            "Theme import completed",
+            context="theme.import",
+            details={
+                "source_path": in_path,
+                "mode": str(report.get("mode") or ""),
+                "created": int(report.get("created") or 0),
+                "overwritten": int(report.get("overwritten") or 0),
+                "renamed": int(report.get("renamed") or 0),
+                "skipped": int(report.get("skipped") or 0),
+                "applied_current": bool(report.get("applied_current")),
+            },
+        )
 
     except Exception as e:
+        log_exception(e, context="theme.import")
         QMessageBox.critical(parent, "Theme import failed", _fmt_exc("Import failed", e))
 
 
