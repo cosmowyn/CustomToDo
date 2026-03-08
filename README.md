@@ -1,37 +1,88 @@
 # CustomTaskManager
 
-CustomTaskManager is a desktop task manager built with Python 3, PySide6, and SQLite. It focuses on hierarchical task planning, fast capture, local-first data storage, and power-user workflows such as saved views, templates, reminders, and review dashboards.
+CustomTaskManager is a local-first desktop task manager built with Python 3, PySide6, and SQLite. It is designed around a hierarchical task tree, fast keyboard capture, explicit review workflows, and strong data safety features such as snapshots, diagnostics, logging, and migration validation.
 
-## Key Features
+Current app version: `v0.8.0`
 
-- Hierarchical task tree with parent/child tasks, drag-and-drop ordering, and row action gutter buttons
-- Quick-add input with natural parsing for due dates and priorities
-- Advanced search, filter dock, saved views, and built-in perspectives such as Today, Upcoming, Inbox, Someday, and Completed / Archive
-- Notes, tags, dependencies, waiting states, recurrence, time tracking, attachments, and reminders in the details panel
-- Calendar / agenda view, review workflow, analytics dashboard, undo history, bulk edit, and archive restore browser
+## Highlights
+
+### Core task management
+
+- Hierarchical task tree with parent/child tasks, drag-and-drop ordering, row gutter action buttons, and persistent collapse state
+- Manual ordering plus alternate due-date, priority, and status sort modes without destroying saved manual order
+- Multi-selection, bulk edit, archive/restore, permanent delete, and undo/redo with visible history
+- Parent progress rollups and automatic parent completion when child progress reaches 100%
+- Project intelligence including next-action analysis, stalled/blocked reasoning, and workload summaries
+
+### Fast capture and keyboard workflow
+
+- Quick-add bar with natural parsing for dates and priorities
+- Inline capture directives such as tags, buckets, and child/parent targeting
+- Lightweight quick-capture dialog and tray/menu-bar capture entry
+- Command palette for navigation and actions such as views, templates, backups, diagnostics, and workspace switching
+- Platform-aware shortcut labels and behavior for macOS and Windows
+
+### Planning, review, and visibility
+
+- Built-in perspectives: All, Today, Upcoming, Inbox, Someday, and Completed / Archive
+- Advanced search syntax and filter dock
+- Saved filter views
+- Guided review workflow for overdue, inbox, stalled, waiting, recurring, and archive review
+- Focus mode for short actionable work lists
+- Calendar / agenda view with due-date activity markers
+- Analytics dashboard with completion trends, workload warnings, and scheduling hints
+- Relationship inspector for dependencies, dependents, same-tag tasks, and same-project context
+
+### Task details and metadata
+
+- Notes, tags, waiting context, dependencies, recurrence, effort estimates, actual time, and timer support
+- Attachments to files and folders
+- Local reminders with grouped reminder popups, snoozing, reminder modes, and reminder history flags
 - Custom columns with typed editors, including date pickers and editable list values
-- Theme editing plus theme import/export
-- Backup import/export and automatic versioned snapshots
-- PyInstaller packaging helper for Windows and macOS
+- Reusable templates with placeholder variables
+
+### Safety, diagnostics, and portability
+
+- SQLite schema versioning with migration validation and pre-migration backups
+- Backup export/import plus automatic versioned restore-point snapshots
+- Snapshot history viewer with safe restore-to-copy and restore-to-workspace flows
+- Crash logging and labeled operation logging for troubleshooting
+- In-app application log viewer
+- Diagnostics panel with integrity checks and repair preview/repair tools
+- Theme editor plus theme import/export
+- Workspace profiles for multiple databases with separate UI state restoration
+
+### Onboarding and discoverability
+
+- Embedded help system with indexed chapters, search, internal links, and platform-aware shortcut text
+- Quick Start / welcome flow
+- Optional demo data in the current empty workspace
+- Optional separate demo workspace for safe exploration
 
 ## Platform Support
 
-- Supported targets: macOS and Windows
-- Linux development use should work in principle, but the current packaging helper is primarily tuned for Windows and macOS
+- Primary supported desktop targets: macOS and Windows
+- Linux development and headless test execution are supported in practice, but packaging is primarily tuned for macOS and Windows
 
 ## Screenshots
 
-Screenshot documentation can be added here before public release.
+Screenshots can be added here later. Suggested captures:
+
+- main task tree with details/review/calendar docks
+- quick-capture dialog
+- command palette
+- diagnostics panel
+- snapshot history and workspace manager
 
 ## Quick Start
 
-### Prerequisites
+### Requirements
 
 - Python 3.11 or newer
 - `pip`
 - A local virtual environment is recommended
 
-### Clone and set up
+### Clone and install
 
 ```bash
 git clone <your-repo-url>
@@ -42,7 +93,7 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Windows PowerShell activation:
+Windows PowerShell:
 
 ```powershell
 py -3 -m venv .venv
@@ -57,11 +108,65 @@ pip install -r requirements.txt
 python main.py
 ```
 
-The app stores its SQLite database in the per-user application data directory managed by Qt. It does not require admin privileges.
+The application stores its SQLite database and supporting files in the per-user application data directory managed by Qt. No admin rights are required.
+
+### First launch
+
+On first launch, the app can show a Quick Start dialog that helps you:
+
+- start with an empty database
+- load demo data into an empty workspace
+- open a separate demo workspace
+- open the embedded help
+- jump into the review workflow
+
+## Daily Workflow Summary
+
+Typical usage flow:
+
+1. Capture tasks with Quick add, Quick capture, or the command palette
+2. Organize tasks in the tree, details panel, and built-in perspectives
+3. Review the system with Filters, Saved Views, Focus mode, and Review Workflow
+4. Inspect project health through next-action, stalled, and relationship views
+5. Protect data through snapshots, backups, diagnostics, and the application log
+
+## Data, Safety, and Storage
+
+The app is local-first. Important user data stays in the per-user Qt application data location, including:
+
+- primary SQLite database
+- workspace-specific backup snapshots
+- migration backups
+- crash and operation logs
+- persistent settings and themes
+
+Safety features currently included:
+
+- schema validation on open
+- migration error reporting
+- pre-migration SQLite backup
+- integrity diagnostics and repair preview
+- automatic restore-point snapshots with rotation
+- snapshot restore into a separate database copy or separate workspace
+- in-app log viewing for failures and high-risk operations
+
+## Backup and Theme Portability
+
+The app includes both data and theme portability:
+
+- `File > Backup > Export Data…`
+- `File > Backup > Import Data…`
+- `File > Backup > Export Themes…`
+- `File > Backup > Import Themes…`
+- `File > Backup > Create snapshot now`
+- `View > Application log…`
+- `Tools > Snapshot history…`
+
+Exports, snapshots, logs, and restored copies are user files and should generally not be committed to source control.
 
 ## Build / Package
 
-The repository includes an interactive PyInstaller helper:
+The repository includes an interactive PyInstaller helper and a spec file:
 
 ```bash
 pip install -r requirements-dev.txt
@@ -71,36 +176,21 @@ python buildfile.py
 Notes:
 
 - The build helper expects the virtual environment directory to be named `.venv`
-- On Windows, the build helper expects an optional `.ico` icon if you choose to supply one
-- On macOS, the helper can convert common image formats into `.icns` using `sips` and `iconutil`
-- Non-macOS builds can optionally use a splash image
+- `CustomTaskManager.spec` is included for PyInstaller-based packaging
+- On Windows, the build helper can use an `.ico` app icon
+- On macOS, the helper can generate `.icns` assets via `sips` and `iconutil`
+- Build assets live under `build_assets/`
 - Build outputs are written to `dist/`
-
-## Backup and Theme Portability
-
-The app includes both data and theme portability features:
-
-- `File > Backup` for data export/import
-- Theme export/import for visual settings
-- Automatic versioned snapshots for local safety
-
-Backup exports, theme exports, and automatic snapshots are local user files and are not intended to be committed to the repository.
-
-## Development Notes
-
-- The codebase is intentionally local-first and desktop-first
-- SQLite is used directly rather than through an ORM
-- UI logic is split across focused `*_ui.py` modules instead of one large widget file
-- The current structure favors maintainability over packaging to PyPI
 
 ## Testing
 
-The repository includes an automated `pytest` test suite covering critical application logic such as:
+The repository includes an automated `pytest` suite covering critical application logic, including:
 
-- database creation, migrations, integrity checks, and backups
-- model behavior, ordering, filtering, and project intelligence logic
-- quick-add / capture parsing, templates, workspace profiles, and demo data
-- crash logging and related production-hardening helpers
+- database creation, migrations, recurrence persistence, integrity checks, and restore-point helpers
+- tree model behavior, ordering, undo/redo behavior, filtering, and project intelligence logic
+- backup import/export and theme import/export
+- quick-add parsing, capture parsing, templates, workspace profiles, and demo data generation
+- crash logging and diagnostics helpers
 
 Install development dependencies first:
 
@@ -114,13 +204,13 @@ Run the full suite:
 python -m pytest -q
 ```
 
-Additional validation steps:
+Optional validation:
 
 ```bash
-python -m py_compile *.py
+python -m py_compile *.py tests/*.py
 ```
 
-For a lightweight UI smoke check on a headless system:
+For a lightweight headless UI smoke check:
 
 ```bash
 QT_QPA_PLATFORM=offscreen python - <<'PY'
@@ -136,19 +226,72 @@ PY
 
 ## Project Structure
 
+The project is larger than a single-window app now. The main groups are:
+
 ```text
-main.py              Main window, menus, docks, application startup
-db.py                SQLite schema, migrations, and persistence layer
-model.py             Tree model, business logic, and undo-aware operations
-commands.py          Undo/redo command objects
-*_ui.py              Focused PySide6 dialogs, panels, and docks
-theme.py             Theme model and theme application
-theme_io.py          Theme import/export
-backup_io.py         Backup import/export and restore logic
-buildfile.py         Interactive PyInstaller build helper
-app_paths.py         Cross-platform resource and app-data path helpers
-tests/               Pytest suite for core logic and regression coverage
+main.py                   Main window, menus, dock orchestration, startup flow
+db.py                     SQLite schema, migrations, diagnostics, and persistence
+model.py                  Tree model, business logic, and undo-aware operations
+commands.py               QUndoCommand implementations
+
+app_metadata.py           App name/version/profile metadata
+app_paths.py              Cross-platform app-data and resource paths
+platform_utils.py         OS detection and platform-aware shortcut helpers
+crash_logging.py          Crash logging and structured operation logging
+
+backup_io.py              Backup export/import flows
+auto_backup.py            Versioned restore-point snapshot creation and rotation
+theme.py                  Theme definitions and application
+theme_io.py               Theme import/export
+diagnostics.py            Diagnostics report generation
+demo_data.py              Demo dataset and demo workspace generation
+
+query_parsing.py          Search and quick-add parsing helpers
+capture_parsing.py        Capture intent parsing
+capture_actions.py        Capture intent execution routing
+filter_proxy.py           Tree filtering and perspectives
+project_intelligence.py   Next-action, stalled, blocked, and workload analysis
+workflow_assist.py        Review and workflow acknowledgement helpers
+template_params.py        Template placeholder parsing and substitution
+
+calendar_widgets.py       Calendar widgets and agenda helpers
+delegates.py              Tree/editor delegates, typed editors, reminder editors
+time_picker_ui.py         Reusable radial time picker
+columns_ui.py             Custom column dialogs
+settings_ui.py            Settings and theme editor
+details_panel.py          Details editor dock
+filters_ui.py             Filter dock
+review_ui.py              Review workflow dock
+focus_ui.py               Focus mode dock
+analytics_ui.py           Analytics dashboard dock
+relationships_ui.py       Relationship inspector dock
+diagnostics_ui.py         Diagnostics dialog
+log_viewer_ui.py          In-app application log viewer
+command_palette.py        Command palette dialog
+quick_capture_ui.py       Lightweight capture dialog
+archive_ui.py             Archive browser / restore dialog
+snapshot_history_ui.py    Snapshot history and restore dialog
+workspace_profiles.py     Workspace registry and persistence
+workspace_ui.py           Workspace manager dialog
+welcome_ui.py             Quick Start / onboarding dialog
+help_ui.py                Embedded help system
+reminders_ui.py           Reminder batch dialog
+template_vars_ui.py       Template placeholder prompt
+
+buildfile.py              Interactive PyInstaller build helper
+CustomTaskManager.spec    PyInstaller spec
+build_assets/             Packaging and build assets
+tests/                    Pytest suite
 ```
+
+## Development Notes
+
+- The codebase is intentionally desktop-first and local-first
+- SQLite is used directly rather than through an ORM
+- UI behavior is split into focused modules instead of one monolithic window file
+- Diagnostics, logging, and snapshots are treated as first-class app features rather than afterthoughts
+- Packaging is oriented toward standalone desktop distribution rather than PyPI library packaging
+- Global quick-capture hotkey support is optional and depends on `qhotkey` being available in the runtime environment
 
 ## License and Disclaimer
 
