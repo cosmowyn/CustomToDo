@@ -2,7 +2,7 @@
 
 CustomTaskManager is a local-first desktop task manager built with Python 3, PySide6, and SQLite. It is designed around a hierarchical task tree, fast keyboard capture, explicit review workflows, and strong data safety features such as snapshots, diagnostics, logging, and migration validation.
 
-Current app version: `v0.8.0`
+Current app version: `v1.0.0`
 
 ## Highlights
 

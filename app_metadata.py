@@ -1,6 +1,6 @@
 APP_ORGANIZATION = "FocusTools"
 APP_NAME = "CustomTaskManager"
-APP_VERSION = "0.8.0"
+APP_VERSION = "1.0.0"
 APP_PROFILE = "default"
 
 
