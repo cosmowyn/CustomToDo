@@ -14,7 +14,12 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from crash_logging import current_log_path, list_log_paths, logs_dir, read_log_text
+from crash_logging import (
+    current_log_path,
+    list_log_paths,
+    logs_dir,
+    read_log_text,
+)
 from ui_layout import add_left_aligned_buttons, configure_box_layout
 
 
@@ -28,7 +33,8 @@ class LogViewerDialog(QDialog):
         configure_box_layout(root, margins=(10, 10, 10, 10), spacing=10)
 
         intro = QLabel(
-            "This log includes unexpected exceptions and labeled high-risk operations such as backups, imports, "
+            "This log includes unexpected exceptions and labeled "
+            "high-risk operations such as backups, imports, "
             "workspace switches, repairs, and snapshot restores."
         )
         intro.setWordWrap(True)

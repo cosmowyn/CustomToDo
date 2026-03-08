@@ -22,6 +22,7 @@ python main.py
 - Keep changes pragmatic and reviewable
 - Preserve existing user-facing behavior unless the change explicitly fixes a bug or improves documented UX
 - Reuse existing patterns before introducing new abstractions
+- Follow existing Python style conventions and keep code close to PEP 8 where practical without introducing risky non-functional churn
 - Update help text and repository docs when behavior changes in a user-visible way
 - Keep desktop behavior cross-platform where practical, with Windows and macOS as the main targets
 
@@ -31,11 +32,10 @@ At minimum, run:
 
 ```bash
 python -m py_compile *.py
+python -m pytest -q
 ```
 
 If your change touches UI code, also perform a manual smoke test of the affected windows, dialogs, and workflows.
-
-If automated tests are added later, run them before submitting changes.
 
 ## Reporting Bugs
 

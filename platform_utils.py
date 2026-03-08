@@ -84,8 +84,12 @@ def _display_parts_from_spec(spec: str, os_name: str | None = None) -> list[str]
 def _standard_key_display_text(value: QKeySequence.StandardKey, os_name: str | None = None) -> str:
     active_os = os_name or current_os()
     manual_map = {
-        QKeySequence.StandardKey.Undo: "Command+Z" if active_os == OS_MACOS else "Ctrl+Z",
-        QKeySequence.StandardKey.Redo: "Command+Shift+Z" if active_os == OS_MACOS else "Ctrl+Shift+Z",
+        QKeySequence.StandardKey.Undo: (
+            "Command+Z" if active_os == OS_MACOS else "Ctrl+Z"
+        ),
+        QKeySequence.StandardKey.Redo: (
+            "Command+Shift+Z" if active_os == OS_MACOS else "Ctrl+Shift+Z"
+        ),
         QKeySequence.StandardKey.Delete: "Delete",
     }
     if value in manual_map:

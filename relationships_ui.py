@@ -31,8 +31,9 @@ class RelationshipsPanel(QWidget):
         intro_layout = QVBoxLayout(intro_group)
         configure_box_layout(intro_layout)
         self.intro = QLabel(
-            "This panel surfaces direct relationships for the selected task: dependencies, tasks blocked by it, "
-            "same-tag peers, same-project tasks, and project health context."
+            "This panel surfaces direct relationships for the selected "
+            "task: dependencies, tasks blocked by it, same-tag peers, "
+            "same-project tasks, and project health context."
         )
         self.intro.setWordWrap(True)
         intro_layout.addWidget(self.intro)
@@ -75,7 +76,10 @@ class RelationshipsPanel(QWidget):
             lst.setObjectName(f"RelationshipsList_{key}")
             lst.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
             lst.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-            lst.setToolTip(f"{self._group_titles[key]} for the selected task. Double-click to focus.")
+            lst.setToolTip(
+                f"{self._group_titles[key]} for the selected task. "
+                "Double-click to focus."
+            )
             lst.setMinimumHeight(90)
             lst.setMaximumHeight(130)
             lst.itemDoubleClicked.connect(self._on_item_activated)
@@ -172,9 +176,15 @@ class RelationshipsPanel(QWidget):
         self.summary.setText(" | ".join(summary_bits))
 
         ancestors = data.get("ancestors") or []
-        path_parts = [str(row.get("description") or "") for row in ancestors if str(row.get("description") or "").strip()]
+        path_parts = [
+            str(row.get("description") or "")
+            for row in ancestors
+            if str(row.get("description") or "").strip()
+        ]
         path_parts.append(str(task.get("description") or ""))
-        self.path_label.setText("Project path: " + " > ".join(path_parts) if path_parts else "")
+        self.path_label.setText(
+            "Project path: " + " > ".join(path_parts) if path_parts else ""
+        )
 
         for key, lst in self._lists.items():
             rows = data.get(key) or []

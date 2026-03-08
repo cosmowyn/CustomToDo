@@ -1,13 +1,27 @@
 from __future__ import annotations
 
 from datetime import date
+
 from PySide6.QtCore import Signal, Qt, QDate
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QGroupBox, QHBoxLayout, QCheckBox, QLabel,
-    QSpinBox, QDateEdit, QPushButton, QLineEdit, QFormLayout
+    QCheckBox,
+    QDateEdit,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLineEdit,
+    QPushButton,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
 )
 
-from ui_layout import add_form_row, add_left_aligned_buttons, configure_box_layout, configure_form_layout
+from ui_layout import (
+    add_form_row,
+    add_left_aligned_buttons,
+    configure_box_layout,
+    configure_form_layout,
+)
 
 
 class FilterPanel(QWidget):
@@ -15,6 +29,7 @@ class FilterPanel(QWidget):
     Advanced filter controls (no search text here; search lives in the main bar).
     Emits changed() on any modification.
     """
+
     changed = Signal()
 
     def __init__(self, statuses: list[str], parent=None):
@@ -157,7 +172,7 @@ class FilterPanel(QWidget):
         self.changed.emit()
 
     def _on_all_status_changed(self, state: int):
-        checked = (state == Qt.CheckState.Checked.value)
+        checked = state == Qt.CheckState.Checked.value
         for cb in self.status_checks:
             cb.blockSignals(True)
             cb.setChecked(checked)

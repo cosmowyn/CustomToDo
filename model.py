@@ -262,7 +262,7 @@ class TaskTreeModel(QAbstractItemModel):
             return None
         return int(node.task["id"])
 
-    def column_key(self, logical_index: int) -> str: 
+    def column_key(self, logical_index: int) -> str:
         if logical_index < len(self.core_cols):
             return self.core_cols[logical_index][0]
         cc = self.custom_cols[logical_index - len(self.core_cols)]

@@ -551,7 +551,7 @@ class MainWindow(QMainWindow):
         self.row_del_btn.show()
         self.row_add_btn.raise_()
         self.row_del_btn.raise_()
-        
+
     def _row_add_child_clicked(self):
         pidx = self.view.currentIndex()
         if not pidx.isValid():

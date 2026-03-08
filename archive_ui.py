@@ -35,7 +35,10 @@ class ArchiveBrowserDialog(QDialog):
         root = QVBoxLayout(self)
         configure_box_layout(root, margins=DEFAULT_DIALOG_MARGINS, spacing=10)
 
-        intro = QLabel("Browse archived task roots and restore only the items you want back in the active tree.")
+        intro = QLabel(
+            "Browse archived task roots and restore only the items you "
+            "want back in the active tree."
+        )
         intro.setWordWrap(True)
         root.addWidget(intro)
 
@@ -110,11 +113,23 @@ class ArchiveBrowserDialog(QDialog):
             task = QTableWidgetItem(str(r.get("description") or ""))
             task.setData(Qt.ItemDataRole.UserRole, int(r.get("id") or 0))
             self.table.setItem(row_idx, 0, task)
-            self.table.setItem(row_idx, 1, QTableWidgetItem(str(r.get("archived_at") or "")))
+            self.table.setItem(
+                row_idx,
+                1,
+                QTableWidgetItem(str(r.get("archived_at") or "")),
+            )
             self.table.setItem(row_idx, 2, QTableWidgetItem(str(r.get("status") or "")))
-            self.table.setItem(row_idx, 3, QTableWidgetItem(str(r.get("priority") or "")))
+            self.table.setItem(
+                row_idx,
+                3,
+                QTableWidgetItem(str(r.get("priority") or "")),
+            )
             self.table.setItem(row_idx, 4, QTableWidgetItem(str(r.get("due_date") or "")))
-            self.table.setItem(row_idx, 5, QTableWidgetItem(str(r.get("parent_description") or "")))
+            self.table.setItem(
+                row_idx,
+                5,
+                QTableWidgetItem(str(r.get("parent_description") or "")),
+            )
 
         self.table.resizeColumnsToContents()
         self.restore_btn.setEnabled(bool(view_rows))

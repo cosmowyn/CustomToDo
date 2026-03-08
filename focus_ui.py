@@ -47,7 +47,9 @@ class FocusPanel(QWidget):
         controls = QHBoxLayout()
         configure_box_layout(controls, margins=(0, 0, 0, 0), spacing=8)
         self.include_waiting = QCheckBox("Include blocked/waiting context")
-        self.include_waiting.setToolTip("Also show due-today blocked or waiting tasks in the focus list.")
+        self.include_waiting.setToolTip(
+            "Also show due-today blocked or waiting tasks in the focus list."
+        )
         self.refresh_btn = QPushButton("Refresh focus")
         self.refresh_btn.setToolTip("Rebuild the focus list using the current focus options.")
         add_left_aligned_buttons(controls, self.include_waiting, self.refresh_btn)
@@ -56,7 +58,9 @@ class FocusPanel(QWidget):
         self.list = QListWidget()
         self.list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.list.setToolTip("Actionable focus list. Double-click an item to focus it in the task tree.")
+        self.list.setToolTip(
+            "Actionable focus list. Double-click an item to focus it in the task tree."
+        )
         root.addWidget(self.list, 1)
 
         actions = QHBoxLayout()
@@ -69,7 +73,11 @@ class FocusPanel(QWidget):
         add_left_aligned_buttons(actions, self.focus_btn, self.details_btn, self.close_btn)
         root.addLayout(actions)
 
-        self.refresh_btn.clicked.connect(lambda: self.refreshRequested.emit(self.include_waiting.isChecked()))
+        self.refresh_btn.clicked.connect(
+            lambda: self.refreshRequested.emit(
+                self.include_waiting.isChecked()
+            )
+        )
         self.list.itemDoubleClicked.connect(self._emit_focus_from_item)
         self.focus_btn.clicked.connect(self._emit_focus)
         self.details_btn.clicked.connect(self._emit_open_details)

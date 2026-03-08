@@ -11,13 +11,20 @@ DEFAULT_LABEL_WIDTH = 140
 DEFAULT_BUTTON_MIN_WIDTH = 112
 
 
-def configure_box_layout(layout, margins=(0, 0, 0, 0), spacing: int = DEFAULT_SPACING):
+def configure_box_layout(
+    layout,
+    margins=(0, 0, 0, 0),
+    spacing: int = DEFAULT_SPACING,
+):
     layout.setContentsMargins(*margins)
     layout.setSpacing(int(spacing))
     return layout
 
 
-def configure_form_layout(layout: QFormLayout, label_width: int = DEFAULT_LABEL_WIDTH):
+def configure_form_layout(
+    layout: QFormLayout,
+    label_width: int = DEFAULT_LABEL_WIDTH,
+):
     configure_box_layout(layout)
     layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
     layout.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
@@ -30,7 +37,11 @@ def configure_form_layout(layout: QFormLayout, label_width: int = DEFAULT_LABEL_
     return layout
 
 
-def configure_grid_layout(layout: QGridLayout, margins=(0, 0, 0, 0), spacing: int = DEFAULT_SPACING):
+def configure_grid_layout(
+    layout: QGridLayout,
+    margins=(0, 0, 0, 0),
+    spacing: int = DEFAULT_SPACING,
+):
     configure_box_layout(layout, margins=margins, spacing=spacing)
     layout.setHorizontalSpacing(12)
     layout.setVerticalSpacing(spacing)
@@ -50,7 +61,11 @@ def add_form_row(layout: QFormLayout, label: str, field):
     layout.addRow(form_label(label, label_width), field)
 
 
-def add_left_aligned_buttons(layout: QHBoxLayout, *buttons, trailing_stretch: bool = True):
+def add_left_aligned_buttons(
+    layout: QHBoxLayout,
+    *buttons,
+    trailing_stretch: bool = True,
+):
     configure_box_layout(layout)
     layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
     for btn in buttons:
