@@ -152,6 +152,49 @@ def test_project_timeline_selection_stays_synchronized_with_main_selection(
         qapp.processEvents()
 
 
+def test_project_panel_reuses_dashboard_for_same_project_selection(
+    tmp_path,
+    qapp,
+    monkeypatch,
+):
+    window = _build_window(tmp_path, qapp, monkeypatch)
+    try:
+        assert window.model.add_task_with_values("Project A")
+        project_id = int(window.model.last_added_task_id())
+        assert window.model.add_task_with_values("Child A1", parent_id=project_id)
+        child_one = int(window.model.last_added_task_id())
+        assert window.model.add_task_with_values("Child A2", parent_id=project_id)
+        child_two = int(window.model.last_added_task_id())
+
+        fetch_calls = 0
+        original_fetch = window.model.fetch_project_dashboard
+
+        def counted_fetch(task_id: int):
+            nonlocal fetch_calls
+            fetch_calls += 1
+            return original_fetch(task_id)
+
+        monkeypatch.setattr(window.model, "fetch_project_dashboard", counted_fetch)
+
+        window.project_dock.show()
+        qapp.processEvents()
+
+        window._focus_task_by_id(child_one)
+        qapp.processEvents()
+        first_fetch_count = fetch_calls
+        assert first_fetch_count >= 1
+        assert window.project_panel._current_project_id == project_id
+
+        window._focus_task_by_id(child_two)
+        qapp.processEvents()
+        assert fetch_calls == first_fetch_count
+        assert window.project_panel.timeline_widget.selected_uid == f"task:{child_two}"
+        assert window._selected_task_id() == child_two
+    finally:
+        window.close()
+        qapp.processEvents()
+
+
 def test_project_timeline_can_create_task_directly_in_main_window(
     tmp_path,
     qapp,

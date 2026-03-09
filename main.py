@@ -164,6 +164,8 @@ class MainWindow(QMainWindow):
         self._calendar_marker_refresh_pending = False
         self._review_panel_refresh_pending = False
         self._analytics_panel_refresh_pending = False
+        self._project_panel_dirty = True
+        self._project_panel_context_signature: tuple[int | None, int | None] | None = None
         self._reminder_mode = str(
             self.model.settings.value("ui/reminder_mode", self.REMINDER_MODE_NORMAL)
         ).strip() or self.REMINDER_MODE_NORMAL
@@ -461,15 +463,20 @@ class MainWindow(QMainWindow):
         self.proxy.modelReset.connect(self._schedule_active_task_view_refresh)
         self.model.modelReset.connect(self._schedule_task_header_layout)
         self.proxy.modelReset.connect(self._schedule_task_header_layout)
+        self.model.modelReset.connect(self._mark_project_panel_dirty)
+        self.proxy.modelReset.connect(self._mark_project_panel_dirty)
         self.model.dataChanged.connect(lambda *_: self._schedule_calendar_marker_refresh())
         self.model.dataChanged.connect(lambda *_: self._schedule_focus_panel_refresh())
         self.model.dataChanged.connect(lambda *_: self._schedule_active_task_view_refresh())
+        self.model.dataChanged.connect(self._mark_project_panel_dirty)
         self.model.rowsInserted.connect(lambda *_: self._schedule_calendar_marker_refresh())
         self.model.rowsInserted.connect(lambda *_: self._schedule_focus_panel_refresh())
         self.model.rowsInserted.connect(lambda *_: self._schedule_active_task_view_refresh())
+        self.model.rowsInserted.connect(self._mark_project_panel_dirty)
         self.model.rowsRemoved.connect(lambda *_: self._schedule_calendar_marker_refresh())
         self.model.rowsRemoved.connect(lambda *_: self._schedule_focus_panel_refresh())
         self.model.rowsRemoved.connect(lambda *_: self._schedule_active_task_view_refresh())
+        self.model.rowsRemoved.connect(self._mark_project_panel_dirty)
         self.undo_stack.indexChanged.connect(self._on_undo_stack_index_changed)
 
         # Timer to refresh due-date gradient + foreground contrast
@@ -1738,6 +1745,8 @@ class MainWindow(QMainWindow):
     def _clear_active_task_views(self):
         self._active_task_details = None
         self._active_task_id = None
+        self._project_panel_context_signature = None
+        self._project_panel_dirty = True
         self._update_active_task_status_label(None)
         if hasattr(self, "details_panel"):
             self.details_panel.set_task_details(None)
@@ -1801,6 +1810,9 @@ class MainWindow(QMainWindow):
         self._calendar_marker_refresh_pending = False
         self._refresh_calendar_markers()
 
+    def _mark_project_panel_dirty(self, *_):
+        self._project_panel_dirty = True
+
     def _restore_task_focus_if_needed(self, task_id: int | None):
         if task_id is None or not self._db_available():
             return
@@ -1841,7 +1853,13 @@ class MainWindow(QMainWindow):
             return int(details["category_folder_id"])
         return None
 
-    def _refresh_project_panel_from_details(self, details: dict | None, category_folder_id=_UNSET):
+    def _refresh_project_panel_from_details(
+        self,
+        details: dict | None,
+        category_folder_id=_UNSET,
+        *,
+        force: bool = False,
+    ):
         with measure_ui(
             "main._refresh_project_panel",
             visible=bool(
@@ -1857,6 +1875,8 @@ class MainWindow(QMainWindow):
                 self.project_panel.set_category_choices([], None)
                 self.project_panel.set_project_choices([], None)
                 self.project_panel.set_dashboard(None)
+                self._project_panel_context_signature = None
+                self._project_panel_dirty = True
                 return
             current_folder_id = (
                 self._selected_category_folder_id(details)
@@ -1870,6 +1890,19 @@ class MainWindow(QMainWindow):
                 if details and details.get("project_id") is not None
                 else None
             )
+            context_signature = (current_folder_id, current_project_id)
+            active_task_id = (
+                int(details["id"])
+                if details and details.get("id") is not None
+                else None
+            )
+            if (
+                not force
+                and context_signature == self._project_panel_context_signature
+                and not self._project_panel_dirty
+            ):
+                self.project_panel.set_active_task(active_task_id)
+                return
             self.project_panel.set_category_choices(
                 self.model.list_category_folders(),
                 current_folder_id,
@@ -1884,10 +1917,17 @@ class MainWindow(QMainWindow):
                 projects,
                 current_project_id,
             )
-            if current_project_id is None and self.project_panel.project_combo.currentData() is not None:
+            if (
+                current_project_id is None
+                and self.project_panel.project_combo.currentData() is not None
+            ):
                 current_project_id = int(self.project_panel.project_combo.currentData())
+                context_signature = (current_folder_id, current_project_id)
             if current_project_id is None:
                 self.project_panel.set_dashboard(None)
+                self.project_panel.set_active_task(active_task_id)
+                self._project_panel_context_signature = context_signature
+                self._project_panel_dirty = False
                 return
             try:
                 dashboard = self.model.fetch_project_dashboard(int(current_project_id))
@@ -1895,9 +1935,9 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Project cockpit refresh failed", str(e))
                 return
             self.project_panel.set_dashboard(dashboard)
-            self.project_panel.set_active_task(
-                int(details["id"]) if details and details.get("id") is not None else None
-            )
+            self.project_panel.set_active_task(active_task_id)
+            self._project_panel_context_signature = context_signature
+            self._project_panel_dirty = False
 
     def _refresh_active_task_views(self):
         visible = any(
@@ -1945,12 +1985,16 @@ class MainWindow(QMainWindow):
         return self.model.project_id_for_task(int(tid))
 
     def _refresh_project_panel(self):
-        self._refresh_project_panel_from_details(self._selected_task_details())
+        self._refresh_project_panel_from_details(
+            self._selected_task_details(),
+            force=True,
+        )
 
     def _project_panel_select_category(self, folder_id: int | None):
         self._refresh_project_panel_from_details(
             self._selected_task_details(),
             category_folder_id=folder_id,
+            force=True,
         )
 
     def _project_panel_save_profile(self, project_task_id: int, payload: dict):
