@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QListWidget
 
@@ -106,6 +108,82 @@ def test_relationship_inspector_navigation_updates_main_selection(
         assert window._selected_task_id() == child_one
         assert window.details_panel.task_id() == child_one
         assert window.relationships_panel.active_task_label.text() == "Child A1"
+    finally:
+        window.close()
+        qapp.processEvents()
+
+
+def test_project_timeline_selection_stays_synchronized_with_main_selection(
+    tmp_path,
+    qapp,
+    monkeypatch,
+):
+    window = _build_window(tmp_path, qapp, monkeypatch)
+    try:
+        assert window.model.add_task_with_values("Project A")
+        parent_id = int(window.model.last_added_task_id())
+        window.model.set_task_start_date(parent_id, "2026-03-10")
+        window.model.set_task_due_date(parent_id, "2026-03-20")
+
+        assert window.model.add_task_with_values("Child A1", parent_id=parent_id)
+        child_one = int(window.model.last_added_task_id())
+        window.model.set_task_start_date(child_one, "2026-03-11")
+        window.model.set_task_due_date(child_one, "2026-03-14")
+
+        assert window.model.add_task_with_values("Child A2", parent_id=parent_id)
+        child_two = int(window.model.last_added_task_id())
+        window.model.set_task_start_date(child_two, "2026-03-15")
+        window.model.set_task_due_date(child_two, "2026-03-18")
+
+        window.project_dock.show()
+        window._focus_task_by_id(child_one)
+        qapp.processEvents()
+
+        assert window.project_panel.timeline_widget.selected_uid == f"task:{child_one}"
+
+        window.project_panel.timeline_widget.emit_chart_selection(f"task:{child_two}")
+        qapp.processEvents()
+
+        assert window._selected_task_id() == child_two
+        assert window.details_panel.task_id() == child_two
+        assert window.project_panel.timeline_widget.selected_uid == f"task:{child_two}"
+    finally:
+        window.close()
+        qapp.processEvents()
+
+
+def test_project_timeline_can_create_task_directly_in_main_window(
+    tmp_path,
+    qapp,
+    monkeypatch,
+):
+    window = _build_window(tmp_path, qapp, monkeypatch)
+    try:
+        assert window.model.add_task_with_values("Project A")
+        project_id = int(window.model.last_added_task_id())
+        window.model.set_task_start_date(project_id, "2026-03-10")
+        window.model.set_task_due_date(project_id, "2026-03-20")
+
+        window.project_dock.show()
+        window._focus_task_by_id(project_id)
+        qapp.processEvents()
+
+        window.project_panel.timeline_widget.create_task_at(
+            None,
+            date(2026, 3, 16),
+        )
+        qapp.processEvents()
+
+        new_id = window.model.last_added_task_id()
+        assert new_id is not None
+        details = window.model.task_details(int(new_id))
+        assert details is not None
+        assert details["description"] == "New task"
+        assert details["start_date"] == "2026-03-16"
+        assert details["due_date"] == "2026-03-16"
+        assert details["parent_id"] == project_id
+        assert window._selected_task_id() == int(new_id)
+        assert window.project_panel.timeline_widget.selected_uid == f"task:{int(new_id)}"
     finally:
         window.close()
         qapp.processEvents()

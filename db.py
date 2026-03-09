@@ -3975,7 +3975,15 @@ class Database:
             dependency_map,
             today=date.today(),
         )
-        timeline_rows = build_timeline_rows(project_task, phases, tasks, milestones, deliverables, summary)
+        timeline_rows = build_timeline_rows(
+            project_task,
+            phases,
+            tasks,
+            milestones,
+            deliverables,
+            summary,
+            dependency_rows,
+        )
         capacity = compute_personal_capacity(tasks, today=date.today())
         return {
             "project": project_task,

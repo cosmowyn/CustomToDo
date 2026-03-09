@@ -490,6 +490,22 @@ def build_project_summary(
     }
 
 
+def _timeline_uid(kind: str, item_id: int | str) -> str:
+    return f"{str(kind or '').strip().lower()}:{item_id}"
+
+
+def _row_has_dates(row: dict) -> bool:
+    return bool(parse_iso_date(row.get("start_date")) or parse_iso_date(row.get("end_date")))
+
+
+def _row_sort_key(row: dict) -> tuple:
+    return (
+        parse_iso_date(row.get("start_date")) or parse_iso_date(row.get("end_date")) or date.max,
+        str(row.get("label") or "").lower(),
+        int(row.get("item_id") or 0),
+    )
+
+
 def build_timeline_rows(
     project_task: dict,
     phases: list[dict],
@@ -497,93 +513,347 @@ def build_timeline_rows(
     milestones: list[dict],
     deliverables: list[dict],
     summary: dict,
+    dependency_rows: list[dict] | None = None,
 ) -> list[dict]:
-    phase_names = {int(row["id"]): str(row.get("name") or "") for row in phases if row.get("id") is not None}
-    rows: list[dict] = []
+    project_id = int(project_task["id"])
+    phase_map = {
+        int(row["id"]): {
+            "id": int(row["id"]),
+            "name": str(row.get("name") or ""),
+            "sort_order": int(row.get("sort_order") or 0),
+        }
+        for row in phases
+        if row.get("id") is not None
+    }
+    tasks_by_id = {
+        int(row["id"]): row
+        for row in tasks
+        if row.get("id") is not None and int(row["id"]) != project_id
+    }
+    task_children: dict[int | None, list[dict]] = defaultdict(list)
+    for row in tasks_by_id.values():
+        task_children[row.get("parent_id")].append(row)
+    for child_rows in task_children.values():
+        child_rows.sort(
+            key=lambda row: (
+                int(row.get("sort_order") or 0),
+                str(row.get("description") or "").lower(),
+                int(row.get("id") or 0),
+            )
+        )
 
-    project_target = str(summary.get("target_date") or project_task.get("due_date") or "") or None
-    rows.append(
+    milestones_by_phase: dict[int | None, list[dict]] = defaultdict(list)
+    for row in milestones or []:
+        if not parse_iso_date(row.get("start_date")) and not parse_iso_date(row.get("target_date")):
+            continue
+        milestones_by_phase[row.get("phase_id")].append(row)
+    for rows in milestones_by_phase.values():
+        rows.sort(
+            key=lambda row: (
+                parse_iso_date(row.get("target_date")) or date.max,
+                str(row.get("title") or "").lower(),
+                int(row.get("id") or 0),
+            )
+        )
+
+    deliverables_by_phase: dict[int | None, list[dict]] = defaultdict(list)
+    for row in deliverables or []:
+        if not parse_iso_date(row.get("due_date")):
+            continue
+        deliverables_by_phase[row.get("phase_id")].append(row)
+    for rows in deliverables_by_phase.values():
+        rows.sort(
+            key=lambda row: (
+                parse_iso_date(row.get("due_date")) or date.max,
+                str(row.get("title") or "").lower(),
+                int(row.get("id") or 0),
+            )
+        )
+
+    rows: list[dict] = []
+    children_map: dict[str | None, list[str]] = defaultdict(list)
+    row_lookup: dict[str, dict] = {}
+
+    def add_row(row: dict):
+        uid = str(row["uid"])
+        rows.append(row)
+        row_lookup[uid] = row
+        children_map[str(row.get("parent_uid")) if row.get("parent_uid") is not None else None].append(uid)
+
+    project_uid = _timeline_uid("project", project_id)
+    add_row(
         {
+            "uid": project_uid,
             "kind": "project",
-            "item_id": int(project_task["id"]),
+            "item_id": project_id,
             "label": str(project_task.get("description") or "Project"),
+            "parent_uid": None,
+            "phase_id": None,
             "phase_name": "",
             "start_date": None,
-            "end_date": project_target,
+            "end_date": str(summary.get("target_date") or project_task.get("due_date") or "") or None,
             "baseline_date": str(summary.get("baseline_target_date") or "") or None,
             "status": str(summary.get("effective_health") or "on_track"),
             "blocked": bool(summary.get("effective_health") in {"blocked", "awaiting_external_input"}),
             "progress_percent": int(project_task.get("progress_percent") or 0),
+            "summary_row": True,
+            "render_style": "summary",
+            "editable_move": False,
+            "editable_start": False,
+            "editable_end": False,
+            "linked_task_id": project_id,
+            "sort_index": 0,
         }
     )
 
-    for task in tasks:
-        start_date = str(task.get("start_date") or "") or None
-        end_date = str(task.get("due_date") or "") or start_date
-        if not start_date and not end_date:
-            continue
-        rows.append(
+    def top_level_phase_key(task_row: dict) -> int | None:
+        current = dict(task_row)
+        phase_id = current.get("phase_id")
+        parent_id = current.get("parent_id")
+        while parent_id in tasks_by_id:
+            current = tasks_by_id[int(parent_id)]
+            parent_id = current.get("parent_id")
+            if current.get("parent_id") == project_id:
+                phase_id = current.get("phase_id")
+        return phase_id
+
+    top_level_tasks_by_phase: dict[int | None, list[dict]] = defaultdict(list)
+    for task in tasks_by_id.values():
+        if int(task.get("parent_id") or 0) == project_id:
+            top_level_tasks_by_phase[task.get("phase_id")].append(task)
+    for items in top_level_tasks_by_phase.values():
+        items.sort(
+            key=lambda row: (
+                int(row.get("sort_order") or 0),
+                str(row.get("description") or "").lower(),
+                int(row.get("id") or 0),
+            )
+        )
+
+    content_phase_ids: list[int | None] = []
+    for phase_id, phase in sorted(
+        phase_map.items(),
+        key=lambda item: (int(item[1].get("sort_order") or 0), str(item[1].get("name") or "").lower()),
+    ):
+        if (
+            top_level_tasks_by_phase.get(phase_id)
+            or milestones_by_phase.get(phase_id)
+            or deliverables_by_phase.get(phase_id)
+        ):
+            content_phase_ids.append(phase_id)
+    if (
+        top_level_tasks_by_phase.get(None)
+        or milestones_by_phase.get(None)
+        or deliverables_by_phase.get(None)
+    ):
+        content_phase_ids.append(None)
+
+    def phase_label(phase_id: int | None) -> str:
+        if phase_id is None:
+            return "Unassigned"
+        return str(phase_map.get(int(phase_id), {}).get("name") or "Phase")
+
+    def add_task_branch(task_row: dict, parent_uid: str):
+        task_id = int(task_row["id"])
+        child_rows = list(task_children.get(task_id, []))
+        has_children = bool(child_rows)
+        start_date = str(task_row.get("start_date") or "") or None
+        end_date = str(task_row.get("due_date") or "") or start_date
+        add_row(
             {
+                "uid": _timeline_uid("task", task_id),
                 "kind": "task",
-                "item_id": int(task["id"]),
-                "label": str(task.get("description") or "Task"),
-                "phase_name": phase_names.get(int(task.get("phase_id") or 0), ""),
+                "item_id": task_id,
+                "label": str(task_row.get("description") or "Task"),
+                "parent_uid": parent_uid,
+                "phase_id": task_row.get("phase_id"),
+                "phase_name": phase_label(task_row.get("phase_id"))
+                if task_row.get("phase_id") is not None
+                else "",
                 "start_date": start_date or end_date,
                 "end_date": end_date,
                 "baseline_date": None,
-                "status": str(task.get("status") or "Todo"),
-                "blocked": int(task.get("blocked_by_count") or 0) > 0 or bool(str(task.get("waiting_for") or "").strip()),
-                "progress_percent": 100 if str(task.get("status") or "") == "Done" else int(task.get("progress_percent") or 0),
+                "status": str(task_row.get("status") or "Todo"),
+                "blocked": int(task_row.get("blocked_by_count") or 0) > 0
+                or bool(str(task_row.get("waiting_for") or "").strip()),
+                "progress_percent": (
+                    100
+                    if str(task_row.get("status") or "") == "Done"
+                    else int(task_row.get("progress_percent") or 0)
+                ),
+                "summary_row": has_children,
+                "render_style": "summary" if has_children else "task",
+                "editable_move": not has_children,
+                "editable_start": not has_children,
+                "editable_end": not has_children,
+                "linked_task_id": task_id,
+                "reorderable": True,
+                "sort_index": int(task_row.get("sort_order") or 0),
+                "actual_parent_task_id": (
+                    int(task_row.get("parent_id"))
+                    if task_row.get("parent_id") is not None
+                    else None
+                ),
             }
         )
+        task_uid = _timeline_uid("task", task_id)
+        for child in child_rows:
+            add_task_branch(child, task_uid)
 
-    for milestone in milestones:
-        target_date = str(milestone.get("target_date") or "") or None
-        start_date = str(milestone.get("start_date") or "") or target_date
-        if not start_date and not target_date:
-            continue
-        rows.append(
+    for phase_id in content_phase_ids:
+        phase_uid = _timeline_uid("phase", phase_id if phase_id is not None else "unassigned")
+        add_row(
             {
-                "kind": "milestone",
-                "item_id": int(milestone["id"]),
-                "label": str(milestone.get("title") or "Milestone"),
-                "phase_name": phase_names.get(int(milestone.get("phase_id") or 0), ""),
-                "start_date": start_date or target_date,
-                "end_date": target_date or start_date,
-                "baseline_date": str(milestone.get("baseline_target_date") or "") or None,
-                "status": str(milestone.get("status") or "planned"),
-                "blocked": bool(milestone.get("is_blocked")),
-                "progress_percent": int(milestone.get("progress_percent") or 0),
+                "uid": phase_uid,
+                "kind": "phase",
+                "item_id": -1 if phase_id is None else int(phase_id),
+                "label": phase_label(phase_id),
+                "parent_uid": project_uid,
+                "phase_id": phase_id,
+                "phase_name": phase_label(phase_id),
+                "start_date": None,
+                "end_date": None,
+                "baseline_date": None,
+                "status": "",
+                "blocked": False,
+                "progress_percent": 0,
+                "summary_row": True,
+                "render_style": "summary",
+                "editable_move": False,
+                "editable_start": False,
+                "editable_end": False,
+                "linked_task_id": project_id,
+                "sort_index": int(phase_map.get(int(phase_id), {}).get("sort_order") or 999)
+                if phase_id is not None
+                else 9999,
             }
         )
+        for task_row in top_level_tasks_by_phase.get(phase_id, []):
+            add_task_branch(task_row, phase_uid)
+        for milestone in milestones_by_phase.get(phase_id, []):
+            milestone_id = int(milestone["id"])
+            target_date = str(milestone.get("target_date") or "") or None
+            start_date = str(milestone.get("start_date") or "") or target_date
+            add_row(
+                {
+                    "uid": _timeline_uid("milestone", milestone_id),
+                    "kind": "milestone",
+                    "item_id": milestone_id,
+                    "label": str(milestone.get("title") or "Milestone"),
+                    "parent_uid": phase_uid,
+                    "phase_id": phase_id,
+                    "phase_name": phase_label(phase_id) if phase_id is not None else "",
+                    "start_date": start_date or target_date,
+                    "end_date": target_date or start_date,
+                    "baseline_date": str(milestone.get("baseline_target_date") or "") or None,
+                    "status": str(milestone.get("status") or "planned"),
+                    "blocked": bool(milestone.get("is_blocked")),
+                    "progress_percent": int(milestone.get("progress_percent") or 0),
+                    "summary_row": False,
+                    "render_style": "milestone",
+                    "editable_move": True,
+                    "editable_start": False,
+                    "editable_end": False,
+                    "linked_task_id": int(milestone.get("linked_task_id") or project_id),
+                    "sort_index": milestone_id,
+                }
+            )
+        for deliverable in deliverables_by_phase.get(phase_id, []):
+            deliverable_id = int(deliverable["id"])
+            due_date = str(deliverable.get("due_date") or "") or None
+            add_row(
+                {
+                    "uid": _timeline_uid("deliverable", deliverable_id),
+                    "kind": "deliverable",
+                    "item_id": deliverable_id,
+                    "label": str(deliverable.get("title") or "Deliverable"),
+                    "parent_uid": phase_uid,
+                    "phase_id": phase_id,
+                    "phase_name": phase_label(phase_id) if phase_id is not None else "",
+                    "start_date": due_date,
+                    "end_date": due_date,
+                    "baseline_date": str(deliverable.get("baseline_due_date") or "") or None,
+                    "status": str(deliverable.get("status") or "planned"),
+                    "blocked": bool(deliverable.get("is_blocked")),
+                    "progress_percent": (
+                        100 if str(deliverable.get("status") or "") == "completed" else 0
+                    ),
+                    "summary_row": False,
+                    "render_style": "deliverable",
+                    "editable_move": True,
+                    "editable_start": False,
+                    "editable_end": False,
+                    "linked_task_id": int(
+                        deliverable.get("linked_task_id")
+                        or deliverable.get("project_task_id")
+                        or project_id
+                    ),
+                    "sort_index": deliverable_id,
+                }
+            )
 
-    for deliverable in deliverables:
-        due_date = str(deliverable.get("due_date") or "") or None
-        if not due_date:
+    def summarize(uid: str) -> tuple[date | None, date | None]:
+        row = row_lookup[uid]
+        start = parse_iso_date(row.get("start_date"))
+        end = parse_iso_date(row.get("end_date")) or start
+        for child_uid in children_map.get(uid, []):
+            child_start, child_end = summarize(child_uid)
+            if child_start is not None:
+                start = child_start if start is None else min(start, child_start)
+            if child_end is not None:
+                end = child_end if end is None else max(end, child_end)
+        if row.get("summary_row"):
+            row["display_start_date"] = start.isoformat() if start is not None else None
+            row["display_end_date"] = end.isoformat() if end is not None else None
+        else:
+            row["display_start_date"] = row.get("start_date")
+            row["display_end_date"] = row.get("end_date")
+        return start, end
+
+    summarize(project_uid)
+
+    connectors: list[dict] = []
+    for dep in dependency_rows or []:
+        predecessor_uid = _timeline_uid(dep.get("predecessor_kind"), int(dep.get("predecessor_id") or 0))
+        successor_uid = _timeline_uid(dep.get("successor_kind"), int(dep.get("successor_id") or 0))
+        predecessor = row_lookup.get(predecessor_uid)
+        successor = row_lookup.get(successor_uid)
+        if not predecessor or not successor:
             continue
-        rows.append(
+        if predecessor.get("summary_row") or successor.get("summary_row"):
+            continue
+        connectors.append(
             {
-                "kind": "deliverable",
-                "item_id": int(deliverable["id"]),
-                "label": str(deliverable.get("title") or "Deliverable"),
-                "phase_name": phase_names.get(int(deliverable.get("phase_id") or 0), ""),
-                "start_date": due_date,
-                "end_date": due_date,
-                "baseline_date": str(deliverable.get("baseline_due_date") or "") or None,
-                "status": str(deliverable.get("status") or "planned"),
-                "blocked": bool(deliverable.get("is_blocked")),
-                "progress_percent": 100 if str(deliverable.get("status") or "") == "completed" else 0,
+                "id": int(dep.get("id") or 0),
+                "predecessor_uid": predecessor_uid,
+                "successor_uid": successor_uid,
+                "predecessor_kind": str(dep.get("predecessor_kind") or ""),
+                "predecessor_id": int(dep.get("predecessor_id") or 0),
+                "successor_kind": str(dep.get("successor_kind") or ""),
+                "successor_id": int(dep.get("successor_id") or 0),
+                "dep_type": str(dep.get("dep_type") or DEPENDENCY_TYPE_FINISH_TO_START),
+                "is_soft": bool(dep.get("is_soft")),
             }
         )
 
-    order = {"project": 0, "milestone": 1, "deliverable": 2, "task": 3}
+    for row in rows:
+        row["dependencies"] = [
+            dep for dep in connectors if dep["successor_uid"] == str(row["uid"])
+        ]
+
     rows.sort(
         key=lambda row: (
-            parse_iso_date(row.get("start_date")) or parse_iso_date(row.get("end_date")) or date.max,
-            order.get(str(row.get("kind") or ""), 99),
-            str(row.get("phase_name") or "").lower(),
-            str(row.get("label") or "").lower(),
-            int(row.get("item_id") or 0),
+            0 if str(row.get("kind") or "") == "project" else 1,
+            str(row.get("parent_uid") or ""),
+            int(row.get("sort_index") or 0),
+            _row_sort_key(
+                {
+                    "start_date": row.get("display_start_date") or row.get("start_date"),
+                    "end_date": row.get("display_end_date") or row.get("end_date"),
+                    "label": row.get("label"),
+                    "item_id": row.get("item_id"),
+                }
+            ),
         )
     )
     return rows

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -21,7 +20,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QSplitter,
@@ -34,6 +32,7 @@ from PySide6.QtWidgets import (
 
 from delegates import DateEditorWithClear
 from context_help import attach_context_help, create_context_help_header
+from gantt_ui import ProjectGanttView
 from project_management import (
     DEFAULT_PHASE_NAMES,
     DELIVERABLE_STATUSES,
@@ -42,7 +41,6 @@ from project_management import (
     PROJECT_HEALTH_STATES,
     REGISTER_ENTRY_TYPES,
     REGISTER_STATUSES,
-    parse_iso_date,
 )
 from ui_layout import (
     EmptyStateStack,
@@ -505,229 +503,6 @@ class RegisterEntryDialog(QDialog):
         }
 
 
-class ProjectTimelineWidget(QWidget):
-    rowActivated = Signal(str, int)
-    rescheduleRequested = Signal(str, int, int)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._rows: list[dict] = []
-        self._row_bounds: list[tuple[QRectF, str, int]] = []
-        self._bar_bounds: list[dict] = []
-        self._min_date: date | None = None
-        self._span_days = 1
-        self._timeline_left = 0.0
-        self._timeline_width = 1.0
-        self._drag_candidate: dict | None = None
-        self._dragging: dict | None = None
-        self._drag_preview_delta_days = 0
-        self.setMinimumHeight(220)
-        self.setMinimumWidth(760)
-        self.setMouseTracking(True)
-
-    def set_rows(self, rows: list[dict]):
-        self._rows = list(rows or [])
-        height = max(220, 48 + (len(self._rows) * 28))
-        self.setMinimumHeight(height)
-        self._clear_drag_state()
-        self.update()
-
-    def mouseDoubleClickEvent(self, event):
-        pos = event.position()
-        for rect, kind, item_id in self._row_bounds:
-            if rect.contains(pos):
-                self.rowActivated.emit(kind, int(item_id))
-                return
-        super().mouseDoubleClickEvent(event)
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            hit = self._bar_hit(event.position())
-            if hit is not None:
-                self._drag_candidate = {
-                    "kind": str(hit["kind"]),
-                    "item_id": int(hit["item_id"]),
-                    "press_pos": QPointF(event.position()),
-                }
-                event.accept()
-                return
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if self._drag_candidate is None:
-            super().mouseMoveEvent(event)
-            return
-        dx = float(event.position().x() - self._drag_candidate["press_pos"].x())
-        if self._dragging is None and abs(dx) >= QApplication.startDragDistance():
-            self._dragging = dict(self._drag_candidate)
-        if self._dragging is not None:
-            delta_days = self._delta_days_from_pixels(dx)
-            if delta_days != self._drag_preview_delta_days:
-                self._drag_preview_delta_days = delta_days
-                self.update()
-            event.accept()
-            return
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton and self._drag_candidate is not None:
-            kind = str(self._drag_candidate["kind"])
-            item_id = int(self._drag_candidate["item_id"])
-            delta_days = int(self._drag_preview_delta_days)
-            was_dragging = self._dragging is not None
-            self._clear_drag_state()
-            if was_dragging and delta_days != 0:
-                self.rescheduleRequested.emit(kind, item_id, delta_days)
-                event.accept()
-                return
-        super().mouseReleaseEvent(event)
-
-    def _clear_drag_state(self):
-        self._drag_candidate = None
-        self._dragging = None
-        self._drag_preview_delta_days = 0
-
-    def _bar_hit(self, pos: QPointF) -> dict | None:
-        for info in reversed(self._bar_bounds):
-            if info["rect"].adjusted(-4, -4, 4, 4).contains(pos):
-                return info
-        return None
-
-    def _delta_days_from_pixels(self, delta_x: float) -> int:
-        width = max(1.0, float(self._timeline_width or 1.0))
-        span_days = max(1, int(self._span_days or 1))
-        return int(round((float(delta_x) / width) * span_days))
-
-    @staticmethod
-    def _shift_date(value: date | None, delta_days: int) -> date | None:
-        if value is None:
-            return None
-        return value + timedelta(days=int(delta_days))
-
-    def paintEvent(self, event):
-        super().paintEvent(event)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.fillRect(self.rect(), self.palette().base())
-
-        self._row_bounds = []
-        self._bar_bounds = []
-        rows = list(self._rows or [])
-        if not rows:
-            painter.setPen(self.palette().text().color())
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No timeline data available for this project.")
-            return
-
-        all_dates = []
-        for row in rows:
-            for key in ("start_date", "end_date", "baseline_date"):
-                parsed = parse_iso_date(row.get(key))
-                if parsed is not None:
-                    all_dates.append(parsed)
-        if not all_dates:
-            painter.setPen(self.palette().text().color())
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Timeline needs dated tasks, milestones, or deliverables.")
-            return
-
-        min_date = min(all_dates)
-        max_date = max(all_dates)
-        if min_date == max_date:
-            max_date = min_date + timedelta(days=1)
-        span_days = max(1, (max_date - min_date).days)
-        self._min_date = min_date
-        self._span_days = span_days
-
-        label_width = 220
-        header_height = 30
-        row_height = 26
-        left = 12
-        top = 12
-        timeline_left = left + label_width
-        timeline_width = max(220, self.width() - timeline_left - 12)
-        self._timeline_left = float(timeline_left)
-        self._timeline_width = float(timeline_width)
-
-        painter.setPen(self.palette().text().color())
-        painter.drawText(QRectF(left, top, label_width, header_height), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, "Item")
-        painter.drawText(
-            QRectF(timeline_left, top, timeline_width, header_height),
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            f"{min_date.isoformat()}  ->  {max_date.isoformat()}",
-        )
-
-        grid_pen = QPen(self.palette().mid().color())
-        grid_pen.setStyle(Qt.PenStyle.DotLine)
-        painter.setPen(grid_pen)
-        for offset in range(0, span_days + 1, max(1, span_days // 8 or 1)):
-            x = timeline_left + ((offset / span_days) * timeline_width)
-            painter.drawLine(int(x), top + header_height, int(x), self.height() - 12)
-
-        for index, row in enumerate(rows):
-            y = top + header_height + (index * row_height)
-            row_rect = QRectF(left, y, self.width() - 24, row_height)
-            if index % 2 == 0:
-                painter.fillRect(row_rect, self.palette().alternateBase())
-            label = str(row.get("label") or "")
-            phase = str(row.get("phase_name") or "")
-            painter.setPen(self.palette().text().color())
-            painter.drawText(
-                QRectF(left + 4, y, label_width - 8, row_height),
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                f"{label} [{phase}]" if phase else label,
-            )
-
-            start_date = parse_iso_date(row.get("start_date")) or parse_iso_date(row.get("end_date"))
-            end_date = parse_iso_date(row.get("end_date")) or start_date
-            baseline = parse_iso_date(row.get("baseline_date"))
-            if start_date is None or end_date is None:
-                continue
-
-            delta_days = 0
-            if (
-                self._dragging is not None
-                and str(self._dragging.get("kind") or "") == str(row.get("kind") or "")
-                and int(self._dragging.get("item_id") or 0) == int(row.get("item_id") or 0)
-            ):
-                delta_days = int(self._drag_preview_delta_days)
-            draw_start_date = self._shift_date(start_date, delta_days) or start_date
-            draw_end_date = self._shift_date(end_date, delta_days) or end_date
-
-            start_x = timeline_left + (((draw_start_date - min_date).days / span_days) * timeline_width)
-            end_x = timeline_left + (((draw_end_date - min_date).days / span_days) * timeline_width)
-            if end_x <= start_x:
-                end_x = start_x + 6
-            bar_rect = QRectF(start_x, y + 6, max(6, end_x - start_x), row_height - 12)
-
-            status = str(row.get("status") or "").lower()
-            blocked = bool(row.get("blocked"))
-            color = QColor("#3b82f6")
-            if blocked:
-                color = QColor("#ef4444")
-            elif status in {"completed", "done", "on_track"}:
-                color = QColor("#16a34a")
-            elif status in {"blocked", "delayed", "at_risk", "awaiting_external_input", "scope_drifting"}:
-                color = QColor("#f97316")
-            painter.fillRect(bar_rect, color)
-            if delta_days != 0:
-                painter.setPen(QPen(self.palette().highlight().color(), 2))
-                painter.drawRect(bar_rect)
-
-            if baseline is not None:
-                baseline_x = timeline_left + (((baseline - min_date).days / span_days) * timeline_width)
-                painter.setPen(QPen(QColor("#111827"), 2))
-                painter.drawLine(int(baseline_x), int(y + 3), int(baseline_x), int(y + row_height - 3))
-
-            self._row_bounds.append((row_rect, str(row.get("kind") or ""), int(row.get("item_id") or 0)))
-            if str(row.get("kind") or "") in {"task", "milestone", "deliverable"}:
-                self._bar_bounds.append(
-                    {
-                        "rect": QRectF(bar_rect),
-                        "kind": str(row.get("kind") or ""),
-                        "item_id": int(row.get("item_id") or 0),
-                    }
-                )
-
-
 class ProjectCockpitPanel(QWidget):
     projectSelected = Signal(int)
     saveProfileRequested = Signal(int, dict)
@@ -735,6 +510,7 @@ class ProjectCockpitPanel(QWidget):
     addPhaseRequested = Signal(int, str)
     renamePhaseRequested = Signal(int, str)
     deletePhaseRequested = Signal(int)
+    addTaskRequested = Signal(dict)
     addMilestoneRequested = Signal(dict)
     editMilestoneRequested = Signal(int, dict)
     deleteMilestoneRequested = Signal(int)
@@ -745,7 +521,12 @@ class ProjectCockpitPanel(QWidget):
     editRegisterEntryRequested = Signal(int, dict)
     deleteRegisterEntryRequested = Signal(int)
     focusTaskRequested = Signal(int)
-    timelineRescheduleRequested = Signal(str, int, int)
+    timelineScheduleRequested = Signal(str, int, object, object)
+    timelineDependencyEditRequested = Signal(str, int)
+    editTaskDependenciesRequested = Signal(int, list)
+    editMilestoneDependenciesRequested = Signal(int, list)
+    timelineTaskMoveRelativeRequested = Signal(int, int)
+    timelineTaskMoveRequested = Signal(int, object, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -988,6 +769,9 @@ class ProjectCockpitPanel(QWidget):
             ["Title", "Phase", "Start", "Target", "Baseline", "Status", "Progress", "Blocked"]
         )
         self.milestones_table.itemDoubleClicked.connect(lambda _item: self._edit_selected_milestone())
+        self.milestones_table.itemSelectionChanged.connect(
+            self._sync_timeline_from_milestone_table
+        )
         self.milestones_stack = EmptyStateStack(
             self.milestones_table,
             "No milestones yet.",
@@ -1035,6 +819,9 @@ class ProjectCockpitPanel(QWidget):
             ["Title", "Phase", "Due", "Baseline", "Status", "Version", "Linked"]
         )
         self.deliverables_table.itemDoubleClicked.connect(lambda _item: self._edit_selected_deliverable())
+        self.deliverables_table.itemSelectionChanged.connect(
+            self._sync_timeline_from_deliverable_table
+        )
         self.deliverables_stack = EmptyStateStack(
             self.deliverables_table,
             "No deliverables yet.",
@@ -1108,23 +895,32 @@ class ProjectCockpitPanel(QWidget):
         configure_box_layout(layout)
         section = SectionPanel(
             "Timeline",
-            "Drag dated bars to reschedule tasks, milestones, and "
-            "deliverables. Double-click a row to focus the related work.",
+            "Interactive project planner with hierarchy, dependencies, "
+            "direct schedule editing, and zoomable time scales.",
         )
         layout.addWidget(section, 1)
         self.timeline_summary = QLabel("Timeline needs dated tasks, milestones, or deliverables.")
         self.timeline_summary.setWordWrap(True)
         section.body_layout.addWidget(self.timeline_summary)
 
-        self.timeline_widget = ProjectTimelineWidget(self)
-        self.timeline_widget.rowActivated.connect(self._on_timeline_row_activated)
-        self.timeline_widget.rescheduleRequested.connect(self.timelineRescheduleRequested.emit)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setMinimumHeight(260)
-        scroll.setWidget(self.timeline_widget)
+        self.timeline_widget = ProjectGanttView(self)
+        self.timeline_widget.recordSelected.connect(self._on_timeline_row_selected)
+        self.timeline_widget.recordActivated.connect(self._on_timeline_row_activated)
+        self.timeline_widget.scheduleEditRequested.connect(self.timelineScheduleRequested.emit)
+        self.timeline_widget.dependencyEditRequested.connect(self._edit_timeline_dependencies)
+        self.timeline_widget.taskCreateRequested.connect(self._add_task_from_timeline)
+        self.timeline_widget.milestoneCreateRequested.connect(
+            self._add_milestone_from_timeline
+        )
+        self.timeline_widget.deliverableCreateRequested.connect(
+            self._add_deliverable_from_timeline
+        )
+        self.timeline_widget.taskMoveRequested.connect(self.timelineTaskMoveRequested.emit)
+        self.timeline_widget.taskMoveRelativeRequested.connect(
+            self.timelineTaskMoveRelativeRequested.emit
+        )
         self.timeline_stack = EmptyStateStack(
-            scroll,
+            self.timeline_widget,
             "No timeline rows to show.",
             "Add start dates, due dates, milestones, or deliverables to build "
             "a project timeline.",
@@ -1335,10 +1131,10 @@ class ProjectCockpitPanel(QWidget):
         self._populate_deliverables_table(deliverables)
         self._populate_register_table(register_entries)
         timeline_rows = list(dashboard.get("timeline_rows") or [])
-        self.timeline_widget.set_rows(timeline_rows)
+        self.timeline_widget.set_dashboard(dashboard)
         self.timeline_stack.set_has_content(bool(timeline_rows))
         self.timeline_summary.setText(
-            f"{len(timeline_rows)} row(s) across tasks, milestones, and deliverables."
+            f"{len(timeline_rows)} timeline row(s) across project structure, tasks, milestones, and deliverables."
             if timeline_rows
             else "Timeline needs dated tasks, milestones, or deliverables."
         )
@@ -1496,7 +1292,7 @@ class ProjectCockpitPanel(QWidget):
         self.register_table.setRowCount(0)
         self.register_meta.setText("0 register entries")
         self.register_stack.set_has_content(False)
-        self.timeline_widget.set_rows([])
+        self.timeline_widget.set_dashboard(None)
         self.timeline_summary.setText("Timeline needs dated tasks, milestones, or deliverables.")
         self.timeline_stack.set_has_content(False)
         self.day_table.setRowCount(0)
@@ -1625,6 +1421,35 @@ class ProjectCockpitPanel(QWidget):
         payload["project_task_id"] = int(self._current_project_id)
         self.addMilestoneRequested.emit(payload)
 
+    def _add_task_from_timeline(self, payload: dict):
+        if self._current_project_id is None:
+            return
+        task_payload = dict(payload or {})
+        task_payload["project_task_id"] = int(self._current_project_id)
+        if not task_payload.get("description"):
+            task_payload["description"] = "New task"
+        self.addTaskRequested.emit(task_payload)
+
+    def _add_milestone_from_timeline(self, payload: dict):
+        if self._current_project_id is None:
+            return
+        initial_payload = dict(payload or {})
+        initial_payload["project_task_id"] = int(self._current_project_id)
+        dlg = MilestoneDialog(
+            self._phases(),
+            self._task_options(),
+            self._milestone_options(),
+            payload=initial_payload,
+            parent=self,
+        )
+        if dlg.exec() != dlg.DialogCode.Accepted:
+            return
+        milestone_payload = dlg.payload()
+        if not milestone_payload.get("title"):
+            return
+        milestone_payload["project_task_id"] = int(self._current_project_id)
+        self.addMilestoneRequested.emit(milestone_payload)
+
     def _edit_selected_milestone(self):
         milestone_id = self._selected_id_from_table(self.milestones_table)
         if milestone_id is None:
@@ -1686,6 +1511,26 @@ class ProjectCockpitPanel(QWidget):
             return
         payload["project_task_id"] = int(self._current_project_id)
         self.addDeliverableRequested.emit(payload)
+
+    def _add_deliverable_from_timeline(self, payload: dict):
+        if self._current_project_id is None:
+            return
+        initial_payload = dict(payload or {})
+        initial_payload["project_task_id"] = int(self._current_project_id)
+        dlg = DeliverableDialog(
+            self._phases(),
+            self._task_options(),
+            self._milestone_options(),
+            payload=initial_payload,
+            parent=self,
+        )
+        if dlg.exec() != dlg.DialogCode.Accepted:
+            return
+        deliverable_payload = dlg.payload()
+        if not deliverable_payload.get("title"):
+            return
+        deliverable_payload["project_task_id"] = int(self._current_project_id)
+        self.addDeliverableRequested.emit(deliverable_payload)
 
     def _edit_selected_deliverable(self):
         deliverable_id = self._selected_id_from_table(self.deliverables_table)
@@ -1783,18 +1628,187 @@ class ProjectCockpitPanel(QWidget):
             return
         self.deleteRegisterEntryRequested.emit(int(entry_id))
 
+    def _on_timeline_row_selected(self, kind: str, item_id: int):
+        self._sync_tables_from_timeline(kind, item_id)
+        self._focus_related_from_timeline(kind, item_id)
+
     def _on_timeline_row_activated(self, kind: str, item_id: int):
-        if kind == "task":
+        self._sync_tables_from_timeline(kind, item_id)
+        self._focus_related_from_timeline(kind, item_id)
+
+    def _select_row_by_id(self, table, item_id: int):
+        target_id = int(item_id or 0)
+        table.blockSignals(True)
+        if target_id <= 0:
+            table.clearSelection()
+            table.blockSignals(False)
+            return
+        selected = False
+        for row_index in range(table.rowCount()):
+            item = table.item(row_index, 0)
+            if item is None:
+                continue
+            if int(item.data(Qt.ItemDataRole.UserRole) or 0) == target_id:
+                table.selectRow(row_index)
+                table.scrollToItem(item, table.ScrollHint.PositionAtCenter)
+                selected = True
+                break
+        if not selected:
+            table.clearSelection()
+        table.blockSignals(False)
+
+    def _sync_tables_from_timeline(self, kind: str, item_id: int):
+        item_kind = str(kind or "").strip().lower()
+        if item_kind == "milestone":
+            self._select_row_by_id(self.milestones_table, int(item_id))
+            self.deliverables_table.blockSignals(True)
+            self.deliverables_table.clearSelection()
+            self.deliverables_table.blockSignals(False)
+            return
+        if item_kind == "deliverable":
+            self._select_row_by_id(self.deliverables_table, int(item_id))
+            self.milestones_table.blockSignals(True)
+            self.milestones_table.clearSelection()
+            self.milestones_table.blockSignals(False)
+            return
+        self.milestones_table.blockSignals(True)
+        self.milestones_table.clearSelection()
+        self.milestones_table.blockSignals(False)
+        self.deliverables_table.blockSignals(True)
+        self.deliverables_table.clearSelection()
+        self.deliverables_table.blockSignals(False)
+
+    def _sync_timeline_from_milestone_table(self):
+        milestone_id = self._selected_id_from_table(self.milestones_table)
+        if milestone_id is None:
+            return
+        self.timeline_widget.select_item("milestone", int(milestone_id), ensure_visible=True)
+
+    def _sync_timeline_from_deliverable_table(self):
+        deliverable_id = self._selected_id_from_table(self.deliverables_table)
+        if deliverable_id is None:
+            return
+        self.timeline_widget.select_item(
+            "deliverable",
+            int(deliverable_id),
+            ensure_visible=True,
+        )
+
+    def _focus_related_from_timeline(self, kind: str, item_id: int):
+        item_kind = str(kind or "").strip().lower()
+        if item_kind in {"task", "project"}:
             self.focusTaskRequested.emit(int(item_id))
             return
-        if kind == "project":
-            self.focusTaskRequested.emit(int(item_id))
+        if item_kind == "milestone":
+            row = next(
+                (
+                    item
+                    for item in (self._dashboard or {}).get("milestones") or []
+                    if int(item.get("id") or 0) == int(item_id)
+                ),
+                None,
+            )
+            if row and row.get("linked_task_id"):
+                self.focusTaskRequested.emit(int(row.get("linked_task_id")))
+            elif row and row.get("project_task_id"):
+                self.focusTaskRequested.emit(int(row.get("project_task_id")))
             return
-        if kind == "milestone":
-            row = next((item for item in (self._dashboard or {}).get("milestones") or [] if int(item.get("id") or 0) == int(item_id)), None)
+        if item_kind == "deliverable":
+            row = next(
+                (
+                    item
+                    for item in (self._dashboard or {}).get("deliverables") or []
+                    if int(item.get("id") or 0) == int(item_id)
+                ),
+                None,
+            )
             if row and row.get("linked_task_id"):
                 self.focusTaskRequested.emit(int(row.get("linked_task_id")))
-        if kind == "deliverable":
-            row = next((item for item in (self._dashboard or {}).get("deliverables") or [] if int(item.get("id") or 0) == int(item_id)), None)
-            if row and row.get("linked_task_id"):
-                self.focusTaskRequested.emit(int(row.get("linked_task_id")))
+            elif row and row.get("project_task_id"):
+                self.focusTaskRequested.emit(int(row.get("project_task_id")))
+
+    def _dependency_targets_for_milestone(self, milestone_id: int) -> list[dict]:
+        return [
+            {
+                "kind": "task",
+                "id": int(row.get("id") or 0),
+                "label": f"Task: {str(row.get('description') or row.get('label') or '')}",
+            }
+            for row in self._task_options()
+        ] + [
+            {
+                "kind": "milestone",
+                "id": int(row.get("id") or 0),
+                "label": f"Milestone: {str(row.get('title') or row.get('label') or '')}",
+            }
+            for row in self._milestone_options(exclude_id=milestone_id)
+        ]
+
+    def _edit_timeline_dependencies(self, kind: str, item_id: int):
+        item_kind = str(kind or "").strip().lower()
+        if item_kind == "task":
+            row = next(
+                (
+                    item
+                    for item in (self._dashboard or {}).get("tasks") or []
+                    if int(item.get("id") or 0) == int(item_id)
+                ),
+                None,
+            )
+            if row is None:
+                return
+            targets = [
+                {
+                    "kind": "task",
+                    "id": int(item.get("id") or 0),
+                    "label": f"Task: {str(item.get('description') or '')}",
+                }
+                for item in self._task_options()
+                if int(item.get("id") or 0) != int(item_id)
+            ]
+            selected_refs = [
+                {"kind": "task", "id": int(dep.get("predecessor_id") or 0)}
+                for dep in (self._dashboard or {}).get("dependencies") or []
+                if str(dep.get("successor_kind") or "").strip().lower() == "task"
+                and int(dep.get("successor_id") or 0) == int(item_id)
+                and str(dep.get("predecessor_kind") or "").strip().lower() == "task"
+                and int(dep.get("predecessor_id") or 0) > 0
+            ]
+            dlg = DependencyPickerDialog(targets, selected_refs, self)
+            if dlg.exec() != dlg.DialogCode.Accepted:
+                return
+            refs = dlg.selected_refs()
+            dep_ids = [
+                int(ref.get("id") or 0)
+                for ref in refs
+                if str(ref.get("kind") or "").strip().lower() == "task"
+            ]
+            self.timelineDependencyEditRequested.emit("task", int(item_id))
+            self.editTaskDependenciesRequested.emit(int(item_id), dep_ids)
+            return
+        if item_kind != "milestone":
+            return
+        row = next(
+            (
+                item
+                for item in (self._dashboard or {}).get("milestones") or []
+                if int(item.get("id") or 0) == int(item_id)
+            ),
+            None,
+        )
+        if row is None:
+            return
+        dlg = DependencyPickerDialog(
+            self._dependency_targets_for_milestone(int(item_id)),
+            row.get("dependencies") or [],
+            self,
+        )
+        if dlg.exec() != dlg.DialogCode.Accepted:
+            return
+        payload = dict(row)
+        payload["dependencies"] = dlg.selected_refs()
+        self.timelineDependencyEditRequested.emit("milestone", int(item_id))
+        self.editMilestoneDependenciesRequested.emit(int(item_id), payload["dependencies"])
+
+    def set_active_task(self, task_id: int | None):
+        self.timeline_widget.set_active_task(task_id)

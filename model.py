@@ -1219,8 +1219,20 @@ class TaskTreeModel(QAbstractItemModel):
         self.reload_all(reset_header_state=False)
 
     def set_task_phase(self, task_id: int, phase_id: int | None):
-        self.db.set_task_phase(int(task_id), None if phase_id is None else int(phase_id))
-        self._refresh_after_task_mutation([int(task_id)], reload=False)
+        normalized_phase_id = None if phase_id is None else int(phase_id)
+
+        def apply():
+            self.db.set_task_phase(int(task_id), normalized_phase_id)
+
+        self.undo_stack.push(
+            TaskMutationCommand(
+                self,
+                int(task_id),
+                "Set task phase",
+                apply,
+                refresh_mode="single",
+            )
+        )
 
     def fetch_project_milestones(self, project_task_id: int) -> list[dict]:
         return self.db.fetch_project_milestones(int(project_task_id))
@@ -1261,6 +1273,22 @@ class TaskTreeModel(QAbstractItemModel):
                 self,
                 mid,
                 "Reschedule milestone",
+                lambda: self.db.upsert_milestone(payload),
+            )
+        )
+
+    def set_milestone_dependencies(self, milestone_id: int, dependency_refs: list[dict]):
+        mid = int(milestone_id)
+        current = self.db.fetch_milestone_by_id(mid)
+        if not current:
+            return
+        payload = dict(current)
+        payload["dependencies"] = list(dependency_refs or [])
+        self.undo_stack.push(
+            MilestoneMutationCommand(
+                self,
+                mid,
+                "Edit milestone dependencies",
                 lambda: self.db.upsert_milestone(payload),
             )
         )
@@ -1422,6 +1450,16 @@ class TaskTreeModel(QAbstractItemModel):
         if new_row == old_row:
             return False
         self.undo_stack.push(MoveNodeCommand(self, int(task_id), parent_id, new_row))
+        return True
+
+    def move_task_to_row(self, task_id: int, parent_id: int | None, row: int) -> bool:
+        node = self.node_for_id(int(task_id))
+        if not node or not node.parent:
+            return False
+        target_parent_id = None if parent_id is None else int(parent_id)
+        self.undo_stack.push(
+            MoveNodeCommand(self, int(task_id), target_parent_id, int(max(0, row)))
+        )
         return True
 
     def duplicate_task(self, task_id: int, include_children: bool = False) -> int | None:

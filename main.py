@@ -1014,6 +1014,7 @@ class MainWindow(QMainWindow):
         self.project_panel.addPhaseRequested.connect(self._project_panel_add_phase)
         self.project_panel.renamePhaseRequested.connect(self._project_panel_rename_phase)
         self.project_panel.deletePhaseRequested.connect(self._project_panel_delete_phase)
+        self.project_panel.addTaskRequested.connect(self._project_panel_add_task)
         self.project_panel.addMilestoneRequested.connect(self._project_panel_add_milestone)
         self.project_panel.editMilestoneRequested.connect(self._project_panel_edit_milestone)
         self.project_panel.deleteMilestoneRequested.connect(self._project_panel_delete_milestone)
@@ -1023,8 +1024,22 @@ class MainWindow(QMainWindow):
         self.project_panel.addRegisterEntryRequested.connect(self._project_panel_add_register_entry)
         self.project_panel.editRegisterEntryRequested.connect(self._project_panel_edit_register_entry)
         self.project_panel.deleteRegisterEntryRequested.connect(self._project_panel_delete_register_entry)
+        self.project_panel.editTaskDependenciesRequested.connect(
+            self._project_panel_edit_task_dependencies
+        )
+        self.project_panel.editMilestoneDependenciesRequested.connect(
+            self._project_panel_edit_milestone_dependencies
+        )
         self.project_panel.focusTaskRequested.connect(self._focus_task_by_id)
-        self.project_panel.timelineRescheduleRequested.connect(self._project_panel_reschedule_timeline_item)
+        self.project_panel.timelineScheduleRequested.connect(
+            self._project_panel_schedule_timeline_item
+        )
+        self.project_panel.timelineTaskMoveRequested.connect(
+            self._move_task_to_row_from_timeline
+        )
+        self.project_panel.timelineTaskMoveRelativeRequested.connect(
+            self._move_selected_task_from_timeline
+        )
 
         self.project_dock = QDockWidget("Project cockpit", self)
         self.project_dock.setObjectName("ProjectCockpitDock")
@@ -1593,6 +1608,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Project cockpit refresh failed", str(e))
             return
         self.project_panel.set_dashboard(dashboard)
+        self.project_panel.set_active_task(
+            int(details["id"]) if details and details.get("id") is not None else None
+        )
 
     def _refresh_active_task_views(self):
         if not self._db_available():
@@ -1656,6 +1674,60 @@ class MainWindow(QMainWindow):
             return
         self._refresh_project_panel()
         self._refresh_details_dock()
+
+    def _project_panel_add_task(self, payload: dict):
+        data = dict(payload or {})
+        description = str(data.get("description") or "New task").strip() or "New task"
+        parent_id = data.get("parent_id")
+        phase_id = data.get("phase_id")
+        start_date = str(data.get("start_date") or "").strip() or None
+        due_date = str(data.get("due_date") or "").strip() or start_date
+        bucket = "today"
+        if due_date and due_date > date.today().isoformat():
+            bucket = "upcoming"
+
+        self.model.undo_stack.beginMacro("Add task from planner")
+        try:
+            ok = self.model.add_task_with_values(
+                description=description,
+                due_date=due_date,
+                priority=None,
+                parent_id=None if parent_id is None else int(parent_id),
+                planned_bucket=bucket,
+            )
+            if not ok:
+                self.statusBar().showMessage(
+                    "Planner task creation failed. Nesting limit reached for the target parent.",
+                    4000,
+                )
+                return
+            new_id = self.model.last_added_task_id()
+            if new_id is None:
+                return
+            if start_date:
+                self.model.set_task_start_date(int(new_id), start_date)
+            if phase_id is not None:
+                self.model.set_task_phase(int(new_id), int(phase_id))
+        finally:
+            self.model.undo_stack.endMacro()
+
+        log_event(
+            "Planner task created",
+            context="project.timeline.create",
+            db_path=self.db.path,
+            details={
+                "task_id": int(new_id),
+                "parent_id": None if parent_id is None else int(parent_id),
+                "phase_id": None if phase_id is None else int(phase_id),
+                "start_date": start_date,
+                "due_date": due_date,
+            },
+        )
+        self._focus_task_by_id(int(new_id))
+        self.statusBar().showMessage(
+            "Task added from timeline. Drag or resize the bar to refine its schedule.",
+            4000,
+        )
 
     def _project_panel_rename_phase(self, phase_id: int, name: str):
         try:
@@ -4100,55 +4172,42 @@ class MainWindow(QMainWindow):
         except Exception:
             return raw or None
 
-    def _project_panel_reschedule_timeline_item(self, kind: str, item_id: int, delta_days: int):
+    def _project_panel_schedule_timeline_item(
+        self,
+        kind: str,
+        item_id: int,
+        start_date: str | None,
+        end_date: str | None,
+    ):
         item_kind = str(kind or "").strip().lower()
-        days = int(delta_days or 0)
-        if days == 0:
-            return
         try:
             if item_kind == "task":
-                task = self.model.db.fetch_task_by_id(int(item_id))
-                if not task:
-                    return
-                self.model.undo_stack.beginMacro("Reschedule task from timeline")
+                self.model.undo_stack.beginMacro("Reschedule task from planner")
                 try:
-                    if str(task.get("start_date") or "").strip():
-                        self.model.set_task_start_date(
-                            int(item_id),
-                            self._shift_iso_date(task.get("start_date"), days),
-                        )
-                    if str(task.get("due_date") or "").strip():
-                        self.model.set_task_due_date(
-                            int(item_id),
-                            self._shift_iso_date(task.get("due_date"), days),
-                        )
+                    self.model.set_task_start_date(int(item_id), start_date)
+                    self.model.set_task_due_date(int(item_id), end_date)
                 finally:
                     self.model.undo_stack.endMacro()
             elif item_kind == "milestone":
-                milestone = self.model.fetch_milestone_by_id(int(item_id))
-                if not milestone:
-                    return
-                self.model.set_milestone_dates(
-                    int(item_id),
-                    self._shift_iso_date(milestone.get("start_date"), days)
-                    if str(milestone.get("start_date") or "").strip()
-                    else None,
-                    self._shift_iso_date(milestone.get("target_date"), days)
-                    if str(milestone.get("target_date") or "").strip()
-                    else None,
-                )
+                self.model.set_milestone_dates(int(item_id), start_date, end_date)
             elif item_kind == "deliverable":
-                deliverable = self.model.fetch_deliverable_by_id(int(item_id))
-                if not deliverable:
-                    return
-                self.model.set_deliverable_due_date(
-                    int(item_id),
-                    self._shift_iso_date(deliverable.get("due_date"), days),
-                )
+                self.model.set_deliverable_due_date(int(item_id), end_date)
             else:
                 return
+            log_event(
+                "Timeline schedule updated",
+                context="project.timeline.schedule",
+                db_path=self.db.path,
+                details={
+                    "kind": item_kind,
+                    "item_id": int(item_id),
+                    "start_date": start_date,
+                    "end_date": end_date,
+                },
+            )
         except Exception as e:
-            QMessageBox.warning(self, "Timeline reschedule failed", str(e))
+            log_exception(e, context="project-timeline-schedule", db_path=self.db.path)
+            QMessageBox.warning(self, "Timeline schedule failed", str(e))
             return
         self._refresh_project_panel()
         self._refresh_details_dock()
@@ -4156,6 +4215,76 @@ class MainWindow(QMainWindow):
         self._refresh_review_panel()
         self._refresh_focus_panel()
         self._refresh_relationships_panel()
+
+    def _move_selected_task_from_timeline(self, task_id: int, delta: int):
+        tid = int(task_id or 0)
+        if tid <= 0:
+            return
+        if self.model.move_task_relative(tid, int(delta)):
+            log_event(
+                "Timeline row moved",
+                context="project.timeline.reorder",
+                db_path=self.db.path,
+                details={"task_id": tid, "mode": "relative", "delta": int(delta)},
+            )
+            self._focus_task_by_id(tid)
+
+    def _move_task_to_row_from_timeline(self, task_id: int, parent_id, row: int):
+        tid = int(task_id or 0)
+        if tid <= 0:
+            return
+        target_parent = None if parent_id is None else int(parent_id)
+        if self.model.move_task_to_row(tid, target_parent, int(row)):
+            log_event(
+                "Timeline row moved",
+                context="project.timeline.reorder",
+                db_path=self.db.path,
+                details={
+                    "task_id": tid,
+                    "mode": "absolute",
+                    "parent_id": target_parent,
+                    "row": int(row),
+                },
+            )
+            self._focus_task_by_id(tid)
+
+    def _project_panel_edit_task_dependencies(self, task_id: int, dependency_ids: list):
+        try:
+            self.model.set_task_dependencies(int(task_id), [int(x) for x in dependency_ids or []])
+            log_event(
+                "Timeline dependencies updated",
+                context="project.timeline.dependencies",
+                db_path=self.db.path,
+                details={
+                    "kind": "task",
+                    "task_id": int(task_id),
+                    "dependency_count": len(list(dependency_ids or [])),
+                },
+            )
+        except Exception as e:
+            log_exception(e, context="project-timeline-task-dependencies", db_path=self.db.path)
+            QMessageBox.warning(self, "Dependency update failed", str(e))
+            return
+        self._refresh_project_panel()
+
+    def _project_panel_edit_milestone_dependencies(self, milestone_id: int, dependency_refs: list):
+        try:
+            self.model.set_milestone_dependencies(int(milestone_id), list(dependency_refs or []))
+            log_event(
+                "Timeline dependencies updated",
+                context="project.timeline.dependencies",
+                db_path=self.db.path,
+                details={
+                    "kind": "milestone",
+                    "milestone_id": int(milestone_id),
+                    "dependency_count": len(list(dependency_refs or [])),
+                },
+            )
+        except Exception as e:
+            log_exception(e, context="project-timeline-milestone-dependencies", db_path=self.db.path)
+            QMessageBox.warning(self, "Dependency update failed", str(e))
+            return
+        self._refresh_project_panel()
 
     def _set_perspective_by_key(self, key: str):
         for i in range(self.view_mode.count()):

@@ -41,7 +41,7 @@ CustomToDo is not for:
 - Project phases for intake, planning, execution, testing, approval, and closure
 - Milestones, deliverables, baselines, and variance tracking
 - Structured risk, issue, assumption, and decision registers
-- Timeline / Gantt-style planning for tasks, milestones, and deliverables
+- Interactive timeline / Gantt planning with hierarchy, dependencies, today markers, context menus, zoom, double-click task creation, and direct drag/resize scheduling
 - Health indicators, blockers, workload pressure, and next-action support
 
 ### Review and visibility

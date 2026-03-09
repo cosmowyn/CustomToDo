@@ -474,8 +474,15 @@ HELP_CHAPTERS: list[HelpChapter] = [
             <li><strong>Deliverables</strong> stay distinct from generic tasks and track due date, acceptance criteria, linked work, and version/reference text.</li>
             <li><strong>Structured registers</strong> store risks, issues, assumptions, and decisions as separate records instead of free-form notes.</li>
             <li><strong>Baseline tracking</strong> compares current target dates and effort against the saved baseline so slippage is visible.</li>
-            <li><strong>Timeline</strong> shows project, task, milestone, and deliverable rows over time in a lightweight Gantt-style view.</li>
-            <li><strong>Timeline bars for tasks, milestones, and deliverables can be dragged horizontally</strong> to reschedule dates directly from the project cockpit.</li>
+            <li><strong>Timeline</strong> now behaves like a serious interactive planner with a hierarchy tree on the left and a zoomable time canvas on the right.</li>
+            <li><strong>Tasks, milestones, and deliverables can be dragged horizontally</strong> to move scheduled work directly from the chart.</li>
+            <li><strong>Task bars can be resized from the left and right edges</strong> to adjust start and due dates with day-based snapping.</li>
+            <li><strong>Double-click empty timeline space to add a new task at that date</strong>. The new bar is selected immediately so you can drag or resize it without leaving the chart.</li>
+            <li><strong>Milestones use a dedicated diamond marker</strong>, while summary rows roll up child spans and dependencies draw as visible connectors across the chart.</li>
+            <li><strong>The timeline includes Today, Selected, Fit project, and Fit selection controls</strong>, along with Day, Week, and Month zoom levels.</li>
+            <li><strong>Ctrl+mouse-wheel zooms the chart</strong>, and the left/right arrow keys nudge the selected item by day. Use <code>Alt+Left/Right</code> to resize task starts and <code>Shift+Left/Right</code> to resize task ends.</li>
+            <li><strong>Right-click the chart for contextual planning actions</strong> such as adding tasks, child tasks, milestones, deliverables, dependency editing, row movement, and view navigation.</li>
+            <li><strong>Timeline selection stays synchronized</strong> with the project cockpit tables, task tree, details panel, and relationship inspector.</li>
             <li><strong>Timeline rescheduling participates in undo/redo</strong>, including milestone and deliverable date moves.</li>
             <li><strong>Workload</strong> summarizes planned effort by day and week to highlight overcommitment for a single local user.</li>
             <li><strong>Health</strong> can be overridden manually, but the app also infers risk from overdue work, blockers, inactivity, and scope-related register entries.</li>

@@ -141,10 +141,16 @@ def test_project_management_crud_dashboard_and_lifecycle(tmp_path):
     assert dashboard["summary"]["baseline_effort_minutes"] == 360
     assert {row["kind"] for row in dashboard["timeline_rows"]} >= {
         "project",
+        "phase",
         "task",
         "milestone",
         "deliverable",
     }
+    assert any(bool(row.get("summary_row")) for row in dashboard["timeline_rows"])
+    milestone_row = next(
+        row for row in dashboard["timeline_rows"] if row["kind"] == "milestone"
+    )
+    assert milestone_row["dependencies"]
 
     updated_milestone_id = db.upsert_milestone(
         {
@@ -254,6 +260,26 @@ def test_project_management_validation_blocks_cross_project_links_and_cycles(tmp
                 "linked_milestone_id": None,
             }
         )
+
+
+def test_task_phase_assignment_is_undoable(tmp_path, qapp):
+    db = Database(str(tmp_path / "pm_phase_undo.sqlite3"))
+    _today, project_id, task_one, _task_two = _seed_project(db)
+    model = TaskTreeModel(db)
+
+    planning_phase = next(
+        row for row in db.fetch_project_phases(project_id) if row["name"] == "Planning"
+    )
+    phase_id = int(planning_phase["id"])
+
+    model.set_task_phase(task_one, phase_id)
+    assert db.fetch_task_by_id(task_one)["phase_id"] == phase_id
+
+    model.undo_stack.undo()
+    assert db.fetch_task_by_id(task_one)["phase_id"] is None
+
+    model.undo_stack.redo()
+    assert db.fetch_task_by_id(task_one)["phase_id"] == phase_id
 
 
 def test_project_management_capacity_and_variance_helpers():
