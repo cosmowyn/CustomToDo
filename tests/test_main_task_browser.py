@@ -268,6 +268,92 @@ def test_custom_columns_expand_horizontal_scroll_range_without_manual_resize(
 
         assert expected_max > initial_max
         assert actual_max == expected_max
+
+        header = window.view.header()
+        scrollbar = window.view.horizontalScrollBar()
+        last_section = header.count() - 1
+        scrollbar.setValue(scrollbar.maximum())
+        qapp.processEvents()
+        assert (
+            header.sectionViewportPosition(last_section)
+            + header.sectionSize(last_section)
+            <= window.view.viewport().width()
+        )
+
+        for logical in range(min(3, window.proxy.columnCount())):
+            header.resizeSection(logical, 40)
+        qapp.processEvents()
+
+        expected_max = window._expected_task_header_scroll_maximum()
+        actual_max = int(window.view.horizontalScrollBar().maximum())
+        assert actual_max == expected_max
+
+        scrollbar.setValue(scrollbar.maximum())
+        qapp.processEvents()
+        assert (
+            header.sectionViewportPosition(last_section)
+            + header.sectionSize(last_section)
+            <= window.view.viewport().width()
+        )
+    finally:
+        window.close()
+        qapp.processEvents()
+
+
+def test_restored_header_state_keeps_far_right_columns_reachable(
+    tmp_path,
+    qapp,
+    monkeypatch,
+):
+    seed_window = _build_window(tmp_path, qapp, monkeypatch)
+    try:
+        seed_window._set_tree_visible(True, show_message=False)
+        qapp.processEvents()
+        assert seed_window.model.add_task_with_values("Restore Width Test")
+        qapp.processEvents()
+        for name in (
+            "Impact score",
+            "Owner rating",
+            "Risk band",
+            "Client note",
+            "Region",
+            "Stage note",
+            "Extra 1",
+            "Extra 2",
+        ):
+            seed_window.model.add_custom_column(name, "text")
+        qapp.processEvents()
+        qapp.processEvents()
+
+        header = seed_window.view.header()
+        for logical in range(min(3, seed_window.proxy.columnCount())):
+            header.resizeSection(logical, 48)
+        qapp.processEvents()
+
+        QSettings().setValue("ui/header_state", header.saveState())
+        QSettings().sync()
+    finally:
+        seed_window.close()
+        qapp.processEvents()
+
+    window = _build_window(tmp_path, qapp, monkeypatch)
+    try:
+        window._set_tree_visible(True, show_message=False)
+        qapp.processEvents()
+
+        expected_max = window._expected_task_header_scroll_maximum()
+        actual_max = int(window.view.horizontalScrollBar().maximum())
+        assert actual_max == expected_max
+
+        header = window.view.header()
+        last_section = header.count() - 1
+        window.view.horizontalScrollBar().setValue(window.view.horizontalScrollBar().maximum())
+        qapp.processEvents()
+        assert (
+            header.sectionViewportPosition(last_section)
+            + header.sectionSize(last_section)
+            <= window.view.viewport().width()
+        )
     finally:
         window.close()
         qapp.processEvents()

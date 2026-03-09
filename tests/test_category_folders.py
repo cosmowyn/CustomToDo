@@ -52,6 +52,9 @@ def test_category_folder_depth_limit(tmp_path):
 def test_category_folders_group_tree_and_filter_project_cockpit(tmp_path, qapp, monkeypatch):
     window = _build_window(tmp_path, qapp, monkeypatch)
     try:
+        window.project_dock.hide()
+        qapp.processEvents()
+
         root_folder_id = window.model.create_category_folder("Operations")
         sub_folder_id = window.model.create_category_folder(
             "Internal",

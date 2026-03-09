@@ -431,6 +431,13 @@ class MainWindow(QMainWindow):
         self.view.header().geometriesChanged.connect(
             lambda: self._schedule_row_action_button_update()
         )
+        self.view.header().geometriesChanged.connect(self._schedule_task_header_scroll_sync)
+        self.view.header().sectionResized.connect(
+            lambda *_: self._schedule_task_header_scroll_sync()
+        )
+        self.view.header().sectionMoved.connect(
+            lambda *_: self._schedule_task_header_scroll_sync()
+        )
         self.view.viewport().installEventFilter(self)
         self.view.installEventFilter(self)
         self.view.header().installEventFilter(self)
@@ -1700,6 +1707,7 @@ class MainWindow(QMainWindow):
         self._update_task_table_placeholder()
         if show_tree:
             self._schedule_task_header_layout()
+            self._schedule_task_header_scroll_sync()
         self._schedule_row_action_button_update()
 
     def _toggle_task_table_visibility(self):
@@ -1880,8 +1888,6 @@ class MainWindow(QMainWindow):
         ):
             if not hasattr(self, "project_panel"):
                 return
-            if hasattr(self, "project_dock") and not self.project_dock.isVisible():
-                return
             if not self._db_available():
                 self.project_panel.set_category_choices([], None)
                 self.project_panel.set_project_choices([], None)
@@ -1889,6 +1895,10 @@ class MainWindow(QMainWindow):
                 self._project_panel_context_signature = None
                 self._project_panel_dirty = True
                 return
+            dock_visible = bool(
+                hasattr(self, "project_dock")
+                and self.project_dock.isVisible()
+            )
             current_folder_id = (
                 self._selected_category_folder_id(details)
                 if category_folder_id is _UNSET
@@ -1934,6 +1944,12 @@ class MainWindow(QMainWindow):
             ):
                 current_project_id = int(self.project_panel.project_combo.currentData())
                 context_signature = (current_folder_id, current_project_id)
+            if not dock_visible:
+                self.project_panel.set_dashboard(None)
+                self.project_panel.set_active_task(active_task_id)
+                self._project_panel_context_signature = context_signature
+                self._project_panel_dirty = False
+                return
             if current_project_id is None:
                 self.project_panel.set_dashboard(None)
                 self.project_panel.set_active_task(active_task_id)
@@ -5548,6 +5564,7 @@ class MainWindow(QMainWindow):
             self.view.setColumnHidden(logical, bool(hidden))
 
         self._schedule_task_header_layout()
+        self._schedule_task_header_scroll_sync()
 
         controls_visible = s.value("ui/controls_dock_visible", True, type=bool)
         self.controls_dock.setVisible(bool(controls_visible))
