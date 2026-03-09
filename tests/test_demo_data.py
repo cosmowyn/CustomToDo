@@ -33,6 +33,7 @@ def test_populate_demo_database_creates_rich_sample_data(tmp_path):
     assert summary["pm_dependency_count"] >= 20
     assert summary["attachment_count"] >= 10
     assert summary["custom_column_count"] >= 5
+    assert summary["category_folder_count"] >= 8
 
     tasks = db.fetch_tasks()
     assert any(task.get("parent_id") is not None for task in tasks)
@@ -40,8 +41,10 @@ def test_populate_demo_database_creates_rich_sample_data(tmp_path):
     assert any(task.get("recurrence") for task in tasks)
     assert any(str(task.get("start_date") or "").strip() for task in tasks)
     assert any(task.get("phase_id") is not None for task in tasks)
+    assert any(task.get("category_folder_id") is not None for task in tasks)
     assert len(db.fetch_custom_columns()) >= 5
     assert len(db.list_project_profiles()) >= 4
+    assert len(db.fetch_category_folders()) >= 8
     assert db.load_template("Demo: Meeting follow-up") is not None
     assert db.load_filter_view("Demo: Inbox triage") is not None
 
@@ -89,7 +92,7 @@ def test_build_demo_payload_contains_expected_capabilities():
     payload = build_demo_payload(today=date(2026, 3, 7))
 
     assert payload["format_version"] == 3
-    assert payload["schema_user_version"] == 5
+    assert payload["schema_user_version"] == 6
     assert len(payload["custom_columns"]) >= 5
     assert len(payload["tasks"]) >= 80
     assert len(payload["recurrence_rules"]) >= 4
@@ -102,3 +105,5 @@ def test_build_demo_payload_contains_expected_capabilities():
     assert len(payload["pm_dependencies"]) >= 20
     assert len(payload["saved_filter_views"]) >= 8
     assert len(payload["templates"]) >= 5
+    assert len(payload["category_folders"]) >= 8
+    assert any(task.get("category_folder_id") is not None for task in payload["tasks"])

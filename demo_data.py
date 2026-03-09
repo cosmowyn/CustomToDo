@@ -1895,7 +1895,7 @@ def build_demo_payload(today: date | None = None) -> dict:
     payload = {
         "format_version": 3,
         "exported_at": now_text,
-        "schema_user_version": 5,
+        "schema_user_version": 6,
         "custom_columns": [
             {
                 "name": "Energy",
@@ -3623,6 +3623,118 @@ def build_demo_payload(today: date | None = None) -> dict:
         launch_phases=launch_phases,
         conference_phases=conference_phases,
     )
+    payload["category_folders"] = [
+        {
+            "id": 1,
+            "name": "Work",
+            "parent_folder_id": None,
+            "sort_order": 1,
+            "color_hex": "#3B82F6",
+            "icon_name": "folder-development",
+            "identifier": "WRK",
+            "created_at": now_text,
+            "updated_at": now_text,
+        },
+        {
+            "id": 2,
+            "name": "Product",
+            "parent_folder_id": 1,
+            "sort_order": 1,
+            "color_hex": "#2563EB",
+            "icon_name": "applications-development",
+            "identifier": "PRD",
+            "created_at": now_text,
+            "updated_at": now_text,
+        },
+        {
+            "id": 3,
+            "name": "Events",
+            "parent_folder_id": 1,
+            "sort_order": 2,
+            "color_hex": "#0EA5E9",
+            "icon_name": "view-calendar",
+            "identifier": "EVT",
+            "created_at": now_text,
+            "updated_at": now_text,
+        },
+        {
+            "id": 4,
+            "name": "Operations",
+            "parent_folder_id": 1,
+            "sort_order": 3,
+            "color_hex": "#14B8A6",
+            "icon_name": "folder-tasks",
+            "identifier": "OPS",
+            "created_at": now_text,
+            "updated_at": now_text,
+        },
+        {
+            "id": 5,
+            "name": "Personal",
+            "parent_folder_id": None,
+            "sort_order": 2,
+            "color_hex": "#F59E0B",
+            "icon_name": "user-home",
+            "identifier": "PER",
+            "created_at": now_text,
+            "updated_at": now_text,
+        },
+        {
+            "id": 6,
+            "name": "Home",
+            "parent_folder_id": 5,
+            "sort_order": 1,
+            "color_hex": "#F97316",
+            "icon_name": "go-home",
+            "identifier": "HOME",
+            "created_at": now_text,
+            "updated_at": now_text,
+        },
+        {
+            "id": 7,
+            "name": "Finance",
+            "parent_folder_id": 5,
+            "sort_order": 2,
+            "color_hex": "#EAB308",
+            "icon_name": "wallet",
+            "identifier": "FIN",
+            "created_at": now_text,
+            "updated_at": now_text,
+        },
+        {
+            "id": 8,
+            "name": "Someday",
+            "parent_folder_id": None,
+            "sort_order": 3,
+            "color_hex": "#A855F7",
+            "icon_name": "folder-visiting",
+            "identifier": "MAYBE",
+            "created_at": now_text,
+            "updated_at": now_text,
+        },
+    ]
+    folder_by_description = {
+        LAUNCH_PROJECT_NAME: 2,
+        PORTAL_PROJECT_NAME: 2,
+        CONFERENCE_PROJECT_NAME: 3,
+        "Demo: Weekly review": 4,
+        "Demo: Today - outline one-on-one agenda": 4,
+        "Demo: Renew SSL certificate": 2,
+        "Demo: Book launch photo review": 2,
+        STUDIO_PROJECT_NAME: 6,
+        "Demo: Monthly home budget review": 7,
+        "Demo: Inbox - clarify travel reimbursement": 7,
+        "Demo: Vendor invoice follow-up": 7,
+        "Demo: Finance reconciliation sweep": 7,
+        "Demo: Annual insurance renewal": 7,
+        "Demo: Someday - redesign office storage": 8,
+    }
+    for task in payload["tasks"]:
+        if task.get("parent_id") is not None:
+            continue
+        task["category_folder_id"] = folder_by_description.get(
+            str(task.get("description") or "")
+        )
     return payload
 
 
@@ -3762,6 +3874,7 @@ def populate_demo_database(db: Database, today: date | None = None) -> dict:
         for project_id in project_ids
     )
     top_level_projects = len(project_profiles)
+    category_folder_count = len(db.fetch_category_folders())
     return {
         "imported_tasks": int(report.imported_tasks or 0),
         "created_columns": int(report.created_columns or 0),
@@ -3778,6 +3891,7 @@ def populate_demo_database(db: Database, today: date | None = None) -> dict:
         "pm_dependency_count": dependency_count,
         "attachment_count": attachment_count,
         "custom_column_count": len(db.fetch_custom_columns()),
+        "category_folder_count": category_folder_count,
     }
 
 

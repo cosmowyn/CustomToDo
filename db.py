@@ -32,7 +32,8 @@ from project_management import (
 
 
 RECURRENCE_FREQUENCIES = {"daily", "weekly", "monthly", "yearly"}
-LATEST_SCHEMA_VERSION = 5
+LATEST_SCHEMA_VERSION = 6
+MAX_CATEGORY_FOLDER_DEPTH = 10
 
 
 class DatabaseError(RuntimeError):
@@ -194,6 +195,7 @@ class Database:
 
         required_tables = {
             "tasks",
+            "category_folders",
             "custom_columns",
             "task_custom_values",
             "custom_column_list_values",
@@ -243,6 +245,7 @@ class Database:
             "reminder_fired_at",
             "start_date",
             "phase_id",
+            "category_folder_id",
         }
         if "tasks" in existing_tables:
             cur.execute("PRAGMA table_info(tasks);")
@@ -338,6 +341,12 @@ class Database:
             cur.execute("PRAGMA user_version=5;")
             self.conn.commit()
             ver = 5
+
+        if ver < 6:
+            self._migrate_to_v6_category_folders()
+            cur.execute("PRAGMA user_version=6;")
+            self.conn.commit()
+            ver = 6
 
     def _create_v1(self):
         cur = self.conn.cursor()
@@ -702,6 +711,34 @@ class Database:
             """
         )
 
+    def _migrate_to_v6_category_folders(self):
+        cur = self.conn.cursor()
+
+        self._add_column_if_missing("tasks", "category_folder_id", "INTEGER NULL")
+
+        cur.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS category_folders (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                name              TEXT    NOT NULL,
+                parent_folder_id  INTEGER NULL,
+                sort_order        INTEGER NOT NULL DEFAULT 1,
+                color_hex         TEXT    NULL,
+                icon_name         TEXT    NOT NULL DEFAULT 'folder',
+                identifier        TEXT    NULL,
+                created_at        TEXT    NOT NULL,
+                updated_at        TEXT    NOT NULL,
+                FOREIGN KEY(parent_folder_id) REFERENCES category_folders(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_category_folders_parent_sort
+            ON category_folders(parent_folder_id, sort_order, id);
+
+            CREATE INDEX IF NOT EXISTS idx_tasks_category_folder_id
+            ON tasks(category_folder_id);
+            """
+        )
+
         cur.execute(
             """
             INSERT INTO pm_dependencies(
@@ -743,6 +780,238 @@ class Database:
         except Exception:
             self.conn.rollback()
             raise
+
+    # ---------- Category folders ----------
+    def fetch_category_folders(self) -> list[dict]:
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT id, name, parent_folder_id, sort_order, color_hex, icon_name, identifier, created_at, updated_at
+            FROM category_folders
+            ORDER BY sort_order ASC, LOWER(name), id ASC;
+            """
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+        by_id = {int(row["id"]): row for row in rows if row.get("id") is not None}
+        children_by_parent: dict[int | None, list[dict]] = {}
+        for row in rows:
+            parent_id = row.get("parent_folder_id")
+            parent_key = int(parent_id) if parent_id is not None else None
+            children_by_parent.setdefault(parent_key, []).append(row)
+
+        ordered: list[dict] = []
+
+        def walk(parent_id: int | None, parts: list[str], depth: int):
+            for child in sorted(
+                children_by_parent.get(parent_id, []),
+                key=lambda item: (
+                    int(item.get("sort_order") or 0),
+                    str(item.get("name") or "").lower(),
+                    int(item.get("id") or 0),
+                ),
+            ):
+                current_parts = parts + [str(child.get("name") or "")]
+                child["depth"] = depth
+                child["path"] = " / ".join(p for p in current_parts if p)
+                identifier = str(child.get("identifier") or "").strip()
+                child["display_name"] = (
+                    f"[{identifier}] {child['name']}" if identifier else str(child.get("name") or "")
+                )
+                ordered.append(child)
+                walk(int(child["id"]), current_parts, depth + 1)
+
+        walk(None, [], 0)
+        for row in rows:
+            row.setdefault("depth", 0)
+            row.setdefault("path", str(row.get("name") or ""))
+            row.setdefault("display_name", str(row.get("name") or ""))
+            row["child_folder_count"] = len(children_by_parent.get(int(row["id"]), []))
+            row["is_leaf"] = row["child_folder_count"] == 0
+        return ordered
+
+    def fetch_category_folder(self, folder_id: int | None) -> dict | None:
+        if folder_id is None:
+            return None
+        target_id = int(folder_id)
+        for row in self.fetch_category_folders():
+            if int(row.get("id") or 0) == target_id:
+                return row
+        return None
+
+    def fetch_category_folder_descendant_ids(self, folder_id: int) -> list[int]:
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            WITH RECURSIVE folder_tree(id) AS (
+                SELECT id FROM category_folders WHERE id=?
+                UNION ALL
+                SELECT cf.id
+                FROM category_folders cf
+                JOIN folder_tree ft ON cf.parent_folder_id = ft.id
+            )
+            SELECT id FROM folder_tree ORDER BY id;
+            """,
+            (int(folder_id),),
+        )
+        return [int(row["id"]) for row in cur.fetchall()]
+
+    def _folder_depth(self, folder_id: int | None) -> int:
+        if folder_id is None:
+            return 0
+        rows = {int(row["id"]): row for row in self.fetch_category_folders() if row.get("id") is not None}
+        depth = 0
+        current = rows.get(int(folder_id))
+        while current is not None and current.get("parent_folder_id") is not None:
+            depth += 1
+            current = rows.get(int(current["parent_folder_id"]))
+        return depth
+
+    def _normalize_folder_identifier(self, value: str | None) -> str | None:
+        text = str(value or "").strip()
+        return text or None
+
+    def _validate_folder_parent(self, parent_folder_id: int | None, *, moving_folder_id: int | None = None):
+        if parent_folder_id is None:
+            return
+        parent = self.fetch_category_folder(int(parent_folder_id))
+        if not parent:
+            raise ValueError("Parent category not found.")
+        if moving_folder_id is not None:
+            target = int(parent_folder_id)
+            moving = int(moving_folder_id)
+            if target == moving:
+                raise ValueError("A category cannot be its own parent.")
+            descendant_ids = set(self.fetch_category_folder_descendant_ids(moving))
+            if target in descendant_ids:
+                raise ValueError("A category cannot be moved into one of its descendants.")
+        next_depth = self._folder_depth(int(parent_folder_id)) + 1
+        if next_depth >= MAX_CATEGORY_FOLDER_DEPTH:
+            raise ValueError(
+                f"Category nesting is limited to {MAX_CATEGORY_FOLDER_DEPTH} levels."
+            )
+
+    def create_category_folder(
+        self,
+        name: str,
+        parent_folder_id: int | None = None,
+        *,
+        color_hex: str | None = None,
+        icon_name: str | None = None,
+        identifier: str | None = None,
+    ) -> int:
+        folder_name = str(name or "").strip()
+        if not folder_name:
+            raise ValueError("Category name is required.")
+        parent_id = None if parent_folder_id is None else int(parent_folder_id)
+        self._validate_folder_parent(parent_id)
+        with self.tx():
+            cur = self.conn.cursor()
+            cur.execute(
+                """
+                SELECT COALESCE(MAX(sort_order), 0) + 1 AS next_order
+                FROM category_folders
+                WHERE parent_folder_id IS ?;
+                """,
+                (parent_id,),
+            )
+            next_order = int(cur.fetchone()["next_order"])
+            cur.execute(
+                """
+                INSERT INTO category_folders(
+                    name,
+                    parent_folder_id,
+                    sort_order,
+                    color_hex,
+                    icon_name,
+                    identifier,
+                    created_at,
+                    updated_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    folder_name,
+                    parent_id,
+                    next_order,
+                    str(color_hex or "").strip() or None,
+                    str(icon_name or "folder").strip() or "folder",
+                    self._normalize_folder_identifier(identifier),
+                    now_iso(),
+                    now_iso(),
+                ),
+            )
+            return int(cur.lastrowid)
+
+    def update_category_folder(self, folder_id: int, payload: dict):
+        existing = self.fetch_category_folder(int(folder_id))
+        if not existing:
+            raise ValueError("Category not found.")
+        parent_id = payload.get("parent_folder_id", existing.get("parent_folder_id"))
+        parent_id = None if parent_id in {"", None} else int(parent_id)
+        self._validate_folder_parent(parent_id, moving_folder_id=int(folder_id))
+        name = str(payload.get("name", existing.get("name")) or "").strip()
+        if not name:
+            raise ValueError("Category name is required.")
+        with self.tx():
+            cur = self.conn.cursor()
+            cur.execute(
+                """
+                UPDATE category_folders
+                SET name=?,
+                    parent_folder_id=?,
+                    color_hex=?,
+                    icon_name=?,
+                    identifier=?,
+                    updated_at=?
+                WHERE id=?;
+                """,
+                (
+                    name,
+                    parent_id,
+                    str(payload.get("color_hex", existing.get("color_hex")) or "").strip() or None,
+                    str(payload.get("icon_name", existing.get("icon_name") or "folder")).strip() or "folder",
+                    self._normalize_folder_identifier(
+                        payload.get("identifier", existing.get("identifier"))
+                    ),
+                    now_iso(),
+                    int(folder_id),
+                ),
+            )
+
+    def delete_category_folder(self, folder_id: int):
+        target_id = int(folder_id)
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*) AS child_count FROM category_folders WHERE parent_folder_id=?;",
+            (target_id,),
+        )
+        child_count = int(cur.fetchone()["child_count"] or 0)
+        cur.execute(
+            "SELECT COUNT(*) AS task_count FROM tasks WHERE category_folder_id=? AND parent_id IS NULL;",
+            (target_id,),
+        )
+        task_count = int(cur.fetchone()["task_count"] or 0)
+        if child_count > 0 or task_count > 0:
+            raise ValueError("Category must be empty before it can be removed.")
+        with self.tx():
+            cur = self.conn.cursor()
+            cur.execute("DELETE FROM category_folders WHERE id=?;", (target_id,))
+
+    def set_task_category_folder(self, task_id: int, folder_id: int | None):
+        task = self.fetch_task_by_id(int(task_id))
+        if not task:
+            raise ValueError("Task not found.")
+        if task.get("parent_id") is not None:
+            raise ValueError("Only top-level tasks and projects can be assigned to a category.")
+        folder_value = None if folder_id is None else int(folder_id)
+        if folder_value is not None and not self.fetch_category_folder(folder_value):
+            raise ValueError("Category not found.")
+        with self.tx():
+            cur = self.conn.cursor()
+            cur.execute(
+                "UPDATE tasks SET category_folder_id=?, last_update=? WHERE id=?;",
+                (folder_value, now_iso(), int(task_id)),
+            )
 
     # ---------- Diagnostics / integrity ----------
     def _broken_parent_links(self) -> list[dict]:
@@ -1452,12 +1721,17 @@ class Database:
                    waiting_for,
                    recurrence_rule_id, recurrence_origin_task_id, is_generated_occurrence,
                    reminder_at, reminder_minutes_before, reminder_fired_at,
-                   start_date, phase_id
+                   start_date, phase_id, category_folder_id
             FROM tasks
             ORDER BY COALESCE(parent_id, 0), sort_order ASC, id ASC;
             """
         )
         tasks = [dict(r) for r in cur.fetchall()]
+
+        folders_by_id = {
+            int(row["id"]): row for row in self.fetch_category_folders()
+            if row.get("id") is not None
+        }
 
         # Load custom values in one pass
         cur.execute(
@@ -1529,6 +1803,10 @@ class Database:
             phase = phase_rows.get(int(t.get("phase_id") or 0))
             t["phase_name"] = str(phase.get("name") or "") if phase else ""
             t["phase_project_task_id"] = int(phase["project_task_id"]) if phase and phase.get("project_task_id") is not None else None
+            folder = folders_by_id.get(int(t.get("category_folder_id") or 0))
+            t["category_folder_name"] = str(folder.get("name") or "") if folder else ""
+            t["category_folder_path"] = str(folder.get("path") or "") if folder else ""
+            t["category_folder_display_name"] = str(folder.get("display_name") or "") if folder else ""
         return tasks
 
     def fetch_task_by_id(self, task_id: int) -> dict | None:
@@ -1542,7 +1820,7 @@ class Database:
                    waiting_for,
                    recurrence_rule_id, recurrence_origin_task_id, is_generated_occurrence,
                    reminder_at, reminder_minutes_before, reminder_fired_at,
-                   start_date, phase_id
+                   start_date, phase_id, category_folder_id
             FROM tasks
             WHERE id=?;
             """,
@@ -1587,6 +1865,11 @@ class Database:
         else:
             task["phase_name"] = ""
             task["phase_project_task_id"] = None
+
+        folder = self.fetch_category_folder(int(task["category_folder_id"])) if task.get("category_folder_id") is not None else None
+        task["category_folder_name"] = str(folder.get("name") or "") if folder else ""
+        task["category_folder_path"] = str(folder.get("path") or "") if folder else ""
+        task["category_folder_display_name"] = str(folder.get("display_name") or "") if folder else ""
 
         cur.execute(
             """
@@ -1702,7 +1985,8 @@ class Database:
                     reminder_minutes_before=?,
                     reminder_fired_at=?,
                     start_date=?,
-                    phase_id=?
+                    phase_id=?,
+                    category_folder_id=?
                 WHERE id=?;
                 """,
                 (
@@ -1729,6 +2013,7 @@ class Database:
                     snapshot.get("reminder_fired_at"),
                     snapshot.get("start_date"),
                     snapshot.get("phase_id"),
+                    snapshot.get("category_folder_id"),
                     tid,
                 ),
             )
@@ -1871,6 +2156,7 @@ class Database:
         task_data.setdefault("reminder_fired_at", None)
         task_data.setdefault("start_date", None)
         task_data.setdefault("phase_id", None)
+        task_data.setdefault("category_folder_id", None)
 
         with self.tx():
             cur = self.conn.cursor()
@@ -1885,8 +2171,8 @@ class Database:
                                       waiting_for,
                                       recurrence_rule_id, recurrence_origin_task_id, is_generated_occurrence,
                                       reminder_at, reminder_minutes_before, reminder_fired_at,
-                                      start_date, phase_id)
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                                      start_date, phase_id, category_folder_id)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
                     (
                         task_data["id"], task_data["description"], task_data["due_date"], task_data["last_update"],
@@ -1907,6 +2193,7 @@ class Database:
                         task_data.get("reminder_fired_at"),
                         task_data.get("start_date"),
                         task_data.get("phase_id"),
+                        task_data.get("category_folder_id"),
                     ),
                 )
                 task_id = int(task_data["id"])
@@ -1920,8 +2207,8 @@ class Database:
                                       waiting_for,
                                       recurrence_rule_id, recurrence_origin_task_id, is_generated_occurrence,
                                       reminder_at, reminder_minutes_before, reminder_fired_at,
-                                      start_date, phase_id)
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                                      start_date, phase_id, category_folder_id)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
                     (
                         task_data["description"], task_data["due_date"], task_data["last_update"],
@@ -1942,6 +2229,7 @@ class Database:
                         task_data.get("reminder_fired_at"),
                         task_data.get("start_date"),
                         task_data.get("phase_id"),
+                        task_data.get("category_folder_id"),
                     ),
                 )
                 task_id = int(cur.lastrowid)
@@ -3031,19 +3319,44 @@ class Database:
         )
         return [dict(row) for row in cur.fetchall()]
 
-    def list_project_candidates(self) -> list[dict]:
+    def list_project_candidates(self, folder_id: int | None = None) -> list[dict]:
         cur = self.conn.cursor()
+        params: list[object] = []
+        folder_clause = ""
+        if folder_id is not None:
+            folder_ids = self.fetch_category_folder_descendant_ids(int(folder_id))
+            if not folder_ids:
+                return []
+            placeholders = ", ".join("?" for _ in folder_ids)
+            folder_clause = f" AND t.category_folder_id IN ({placeholders})"
+            params.extend(folder_ids)
+
         cur.execute(
-            """
+            f"""
             SELECT DISTINCT t.id, t.description, t.status, t.priority, t.due_date, t.parent_id,
+                            t.category_folder_id,
                             CASE WHEN pp.task_id IS NOT NULL THEN 1 ELSE 0 END AS has_profile
             FROM tasks t
             LEFT JOIN project_profiles pp ON pp.task_id = t.id
-            WHERE t.parent_id IS NULL OR pp.task_id IS NOT NULL
+            WHERE (t.parent_id IS NULL OR pp.task_id IS NOT NULL)
+            {folder_clause}
             ORDER BY LOWER(t.description), t.id;
-            """
+            """,
+            params,
         )
-        return [dict(row) for row in cur.fetchall()]
+        rows = [dict(row) for row in cur.fetchall()]
+        folders_by_id = {
+            int(row["id"]): row for row in self.fetch_category_folders()
+            if row.get("id") is not None
+        }
+        for row in rows:
+            folder = folders_by_id.get(int(row.get("category_folder_id") or 0))
+            row["folder_name"] = str(folder.get("name") or "") if folder else ""
+            row["folder_path"] = str(folder.get("path") or "") if folder else ""
+            row["folder_display_name"] = str(folder.get("display_name") or "") if folder else ""
+            row["folder_icon_name"] = str(folder.get("icon_name") or "folder") if folder else "folder"
+            row["folder_color_hex"] = str(folder.get("color_hex") or "") if folder else ""
+        return rows
 
     def _ensure_project_phase_defaults_tx(self, cur, project_task_id: int):
         cur.execute(

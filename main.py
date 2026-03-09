@@ -28,6 +28,7 @@ from app_metadata import (
     APP_VERSION,
     app_display_version,
 )
+from category_folders_ui import CategoryFolderDialog
 from crash_logging import install_exception_hooks, log_event, log_exception
 from db import Database, DatabaseMigrationError
 from model import TaskTreeModel, STATUSES
@@ -87,6 +88,9 @@ from ui_layout import (
     configure_box_layout,
     configure_grid_layout,
 )
+
+
+_UNSET = object()
 
 
 class FloatingTaskTableWindow(QMainWindow):
@@ -573,6 +577,10 @@ class MainWindow(QMainWindow):
 
         src_idx0 = self.proxy.mapToSource(idx0)
         task_id = self.model.task_id_from_index(src_idx0)
+        if task_id is None:
+            self.row_add_btn.hide()
+            self.row_del_btn.hide()
+            return
         can_add_child = task_id is not None and self.model.can_add_child_task(task_id)
         self.row_add_btn.setEnabled(can_add_child)
         if can_add_child:
@@ -1011,6 +1019,10 @@ class MainWindow(QMainWindow):
 
     def _init_project_dock(self):
         self.project_panel = ProjectCockpitPanel(self)
+        self.project_panel.categorySelected.connect(self._project_panel_select_category)
+        self.project_panel.addCategoryRequested.connect(self._prompt_new_category)
+        self.project_panel.editCategoryRequested.connect(self._customize_category_folder)
+        self.project_panel.deleteCategoryRequested.connect(self._delete_category_folder)
         self.project_panel.projectSelected.connect(self._focus_task_by_id)
         self.project_panel.saveProfileRequested.connect(self._project_panel_save_profile)
         self.project_panel.saveBaselineRequested.connect(self._project_panel_save_baseline)
@@ -1669,6 +1681,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "details_panel"):
             self.details_panel.set_task_details(None)
         if hasattr(self, "project_panel"):
+            self.project_panel.set_category_choices([], None)
             self.project_panel.set_project_choices([], None)
             self.project_panel.set_dashboard(None)
         if hasattr(self, "relationships_panel"):
@@ -1697,22 +1710,53 @@ class MainWindow(QMainWindow):
         data = self.model.task_relationships(int(details["id"]), limit=10)
         self.relationships_panel.set_relationships(data)
 
-    def _refresh_project_panel_from_details(self, details: dict | None):
+    def _selected_category_folder_id(self, details: dict | None = None) -> int | None:
+        idx = self._selected_proxy_index()
+        if idx is not None:
+            src = self.proxy.mapToSource(idx)
+            folder_id = self.model.folder_id_from_index(src)
+            if folder_id is not None:
+                return int(folder_id)
+        if details and details.get("category_folder_id") is not None:
+            return int(details["category_folder_id"])
+        return None
+
+    def _refresh_project_panel_from_details(self, details: dict | None, category_folder_id=_UNSET):
         if not hasattr(self, "project_panel"):
             return
         if not self._db_available():
+            self.project_panel.set_category_choices([], None)
             self.project_panel.set_project_choices([], None)
             self.project_panel.set_dashboard(None)
             return
+        current_folder_id = (
+            self._selected_category_folder_id(details)
+            if category_folder_id is _UNSET
+            else (
+                None if category_folder_id is None else int(category_folder_id)
+            )
+        )
         current_project_id = (
             int(details["project_id"])
             if details and details.get("project_id") is not None
             else None
         )
+        self.project_panel.set_category_choices(
+            self.model.list_category_folders(),
+            current_folder_id,
+        )
+        projects = self.model.list_project_candidates(folder_id=current_folder_id)
+        visible_ids = {int(row.get("id") or 0) for row in projects}
+        existing_project_id = self.project_panel.project_combo.currentData()
+        if current_project_id is None and existing_project_id is not None:
+            existing_project_id = int(existing_project_id)
+            current_project_id = existing_project_id if existing_project_id in visible_ids else None
         self.project_panel.set_project_choices(
-            self.model.list_project_candidates(),
+            projects,
             current_project_id,
         )
+        if current_project_id is None and self.project_panel.project_combo.currentData() is not None:
+            current_project_id = int(self.project_panel.project_combo.currentData())
         if current_project_id is None:
             self.project_panel.set_dashboard(None)
             return
@@ -1763,6 +1807,12 @@ class MainWindow(QMainWindow):
 
     def _refresh_project_panel(self):
         self._refresh_project_panel_from_details(self._selected_task_details())
+
+    def _project_panel_select_category(self, folder_id: int | None):
+        self._refresh_project_panel_from_details(
+            self._selected_task_details(),
+            category_folder_id=folder_id,
+        )
 
     def _project_panel_save_profile(self, project_task_id: int, payload: dict):
         preserved_task_id = self._selected_task_id()
@@ -4201,22 +4251,166 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._update_row_action_buttons)
 
     # ---------- Context menu + selection helpers ----------
+    def _create_or_edit_category_folder(
+        self,
+        folder_id: int | None = None,
+        *,
+        parent_folder_id: int | None = None,
+    ) -> int | None:
+        folder = None
+        if folder_id is not None:
+            for row in self.model.list_category_folders():
+                if int(row.get("id") or 0) == int(folder_id):
+                    folder = row
+                    break
+        dlg = CategoryFolderDialog(folder, self)
+        if dlg.exec() != dlg.DialogCode.Accepted:
+            return None
+        payload = dlg.payload()
+        if not str(payload.get("name") or "").strip():
+            QMessageBox.warning(self, "Category folder", "Category name is required.")
+            return None
+        try:
+            if folder_id is None:
+                return self.model.create_category_folder(
+                    str(payload.get("name") or ""),
+                    parent_folder_id,
+                    color_hex=payload.get("color_hex"),
+                    icon_name=payload.get("icon_name"),
+                    identifier=payload.get("identifier"),
+                )
+            self.model.update_category_folder(int(folder_id), payload)
+            return int(folder_id)
+        except Exception as e:
+            QMessageBox.warning(self, "Category folder", str(e))
+            return None
+
+    def _prompt_new_category(self, parent_folder_id: int | None = None):
+        new_folder_id = self._create_or_edit_category_folder(
+            None,
+            parent_folder_id=parent_folder_id,
+        )
+        if new_folder_id is not None:
+            self.statusBar().showMessage("Category folder created.", 2500)
+
+    def _customize_category_folder(self, folder_id: int):
+        updated_id = self._create_or_edit_category_folder(int(folder_id))
+        if updated_id is not None:
+            self.statusBar().showMessage("Category folder updated.", 2500)
+
+    def _delete_category_folder(self, folder_id: int):
+        reply = QMessageBox.question(
+            self,
+            "Delete category folder",
+            "Delete this category folder?\n\nThe folder must be empty before it can be removed.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.model.delete_category_folder(int(folder_id))
+        except Exception as e:
+            QMessageBox.warning(self, "Delete category folder", str(e))
+            return
+        self.statusBar().showMessage("Category folder deleted.", 2500)
+
+    def _assign_selected_tasks_to_category(self, folder_id: int | None):
+        ids = self._selected_task_ids()
+        if not ids:
+            return
+        failures: list[str] = []
+        for task_id in ids:
+            try:
+                self.model.assign_task_to_category_folder(int(task_id), folder_id)
+            except Exception as e:
+                failures.append(str(e))
+        if failures:
+            QMessageBox.warning(self, "Move to category", failures[0])
+            return
+        self.statusBar().showMessage("Task category updated.", 2500)
+
+    def _add_task_in_category(self, folder_id: int):
+        created = self.model.add_task_with_values(
+            "",
+            None,
+            None,
+            parent_id=None,
+            category_folder_id=int(folder_id),
+        )
+        if created and self.model.last_added_task_id() is not None:
+            self._focus_task_by_id(int(self.model.last_added_task_id()))
+
+    def _populate_category_assignment_menu(self, menu: QMenu):
+        folders = self.model.list_category_folders()
+        if not folders:
+            act = menu.addAction("Create category…")
+            act.triggered.connect(lambda: self._prompt_new_category(None))
+            return
+        clear_act = menu.addAction("No category")
+        clear_act.triggered.connect(lambda: self._assign_selected_tasks_to_category(None))
+        menu.addSeparator()
+        for row in folders:
+            label = str(row.get("path") or row.get("display_name") or row.get("name") or "Category")
+            act = menu.addAction(label)
+            act.triggered.connect(
+                lambda _checked=False, folder_id=int(row.get("id")): self._assign_selected_tasks_to_category(folder_id)
+            )
+
     def _open_context_menu(self, pos):
         index = self.view.indexAt(pos)
+        menu = QMenu(self)
         if not index.isValid():
+            add_category = QAction("Add category folder", self)
+            add_category.triggered.connect(lambda: self._prompt_new_category(None))
+            menu.addAction(add_category)
+            menu.exec(self.view.viewport().mapToGlobal(pos))
             return
-        self.view.setCurrentIndex(index)
 
+        self.view.setCurrentIndex(index)
         src = self.proxy.mapToSource(index)
+        folder_id = self.model.folder_id_from_index(src)
         task_id = self.model.task_id_from_index(src)
+
+        if folder_id is not None:
+            add_task_act = QAction("Add task in category", self)
+            add_task_act.triggered.connect(
+                lambda: self._add_task_in_category(int(folder_id))
+            )
+            menu.addAction(add_task_act)
+
+            add_subfolder_act = QAction("Add subcategory", self)
+            add_subfolder_act.triggered.connect(
+                lambda: self._prompt_new_category(int(folder_id))
+            )
+            menu.addAction(add_subfolder_act)
+
+            menu.addSeparator()
+
+            customize_act = QAction("Customize category…", self)
+            customize_act.triggered.connect(
+                lambda: self._customize_category_folder(int(folder_id))
+            )
+            menu.addAction(customize_act)
+
+            delete_folder_act = QAction("Delete category", self)
+            delete_folder_act.triggered.connect(
+                lambda: self._delete_category_folder(int(folder_id))
+            )
+            menu.addAction(delete_folder_act)
+
+            menu.exec(self.view.viewport().mapToGlobal(pos))
+            return
+
         if task_id is None:
             return
-
-        menu = QMenu(self)
 
         add_child = QAction("Add child task", self)
         add_child.triggered.connect(self._add_child_to_selected)
         menu.addAction(add_child)
+
+        move_to_category = menu.addMenu("Move to category")
+        self._populate_category_assignment_menu(move_to_category)
 
         duplicate = QAction("Duplicate", self)
         duplicate.triggered.connect(self._duplicate_selected)

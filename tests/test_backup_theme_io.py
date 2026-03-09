@@ -24,6 +24,12 @@ def test_backup_import_roundtrip_and_replace(tmp_path, monkeypatch):
     payload = export_payload(source)
     source_projects = source.list_project_profiles()
     source_project_ids = [int(row["task_id"]) for row in source_projects]
+    source_category_folders = source.fetch_category_folders()
+    source_task_folder_map = {
+        int(row["id"]): row.get("category_folder_id")
+        for row in source.fetch_tasks()
+        if row.get("id") is not None
+    }
 
     target = Database(str(tmp_path / "target.sqlite3"))
     monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.Yes)
@@ -35,6 +41,12 @@ def test_backup_import_roundtrip_and_replace(tmp_path, monkeypatch):
     assert len(target.list_saved_filter_views()) == len(source.list_saved_filter_views())
     assert len(target.list_templates()) == len(source.list_templates())
     assert len(target.list_project_profiles()) == len(source_projects)
+    assert len(target.fetch_category_folders()) == len(source_category_folders)
+    assert {
+        int(row["id"]): row.get("category_folder_id")
+        for row in target.fetch_tasks()
+        if row.get("id") is not None
+    } == source_task_folder_map
     assert (
         sum(len(target.fetch_project_milestones(project_id)) for project_id in source_project_ids)
         == sum(len(source.fetch_project_milestones(project_id)) for project_id in source_project_ids)

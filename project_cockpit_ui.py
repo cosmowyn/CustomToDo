@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QMenu,
     QPlainTextEdit,
     QPushButton,
     QSizePolicy,
@@ -30,6 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from category_folders_ui import folder_display_name, folder_icon
 from delegates import DateEditorWithClear
 from context_help import attach_context_help, create_context_help_header
 from gantt_ui import ProjectGanttView
@@ -504,6 +506,10 @@ class RegisterEntryDialog(QDialog):
 
 
 class ProjectCockpitPanel(QWidget):
+    categorySelected = Signal(object)
+    addCategoryRequested = Signal(object)
+    editCategoryRequested = Signal(int)
+    deleteCategoryRequested = Signal(int)
     projectSelected = Signal(int)
     saveProfileRequested = Signal(int, dict)
     saveBaselineRequested = Signal(int, object, object)
@@ -532,6 +538,7 @@ class ProjectCockpitPanel(QWidget):
         super().__init__(parent)
         self._current_project_id: int | None = None
         self._dashboard: dict | None = None
+        self._all_project_choices: list[dict] = []
         self._loading_dashboard = False
         self._last_profile_signature = None
         self._last_baseline_signature = None
@@ -563,6 +570,12 @@ class ProjectCockpitPanel(QWidget):
         )
         nav_layout = QFormLayout()
         configure_form_layout(nav_layout, label_width=90)
+        self.category_combo = QComboBox()
+        self.category_combo.setToolTip(
+            "Filter project choices by category folder. Right-click for category actions."
+        )
+        self.category_combo.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        nav_layout.addRow("Category", self.category_combo)
         self.project_combo = QComboBox()
         self.project_combo.setToolTip("Jump directly to a project context.")
         nav_layout.addRow("Project", self.project_combo)
@@ -602,6 +615,10 @@ class ProjectCockpitPanel(QWidget):
         self._build_capacity_tab()
         self._install_auto_save_hooks()
 
+        self.category_combo.currentIndexChanged.connect(self._emit_category_change)
+        self.category_combo.customContextMenuRequested.connect(
+            self._open_category_context_menu
+        )
         self.project_combo.currentIndexChanged.connect(self._emit_project_change)
 
     def focus_target(self) -> QWidget | None:
@@ -616,7 +633,7 @@ class ProjectCockpitPanel(QWidget):
             return self.timeline_widget.view
         if tab_name == "workload":
             return self.day_table
-        return self.project_combo
+        return self.project_combo if self.project_combo.count() > 0 else self.category_combo
 
     def _build_overview_tab(self):
         page = QWidget()
@@ -1047,6 +1064,32 @@ class ProjectCockpitPanel(QWidget):
             return
         self.projectSelected.emit(int(project_id))
 
+    def _emit_category_change(self):
+        folder_id = self.category_combo.currentData()
+        self.categorySelected.emit(None if folder_id is None else int(folder_id))
+
+    def _open_category_context_menu(self, pos):
+        menu = QMenu(self)
+        current_folder_id = self.category_combo.currentData()
+
+        add_root = menu.addAction("Add category")
+        add_root.triggered.connect(lambda: self.addCategoryRequested.emit(None))
+
+        if current_folder_id is not None:
+            add_child = menu.addAction("Add subcategory")
+            add_child.triggered.connect(
+                lambda: self.addCategoryRequested.emit(int(current_folder_id))
+            )
+            edit_act = menu.addAction("Customize category…")
+            edit_act.triggered.connect(
+                lambda: self.editCategoryRequested.emit(int(current_folder_id))
+            )
+            delete_act = menu.addAction("Delete category")
+            delete_act.triggered.connect(
+                lambda: self.deleteCategoryRequested.emit(int(current_folder_id))
+            )
+        menu.exec(self.category_combo.mapToGlobal(pos))
+
     def _install_auto_save_hooks(self):
         self._profile_focus_widgets = {
             self.objective_edit,
@@ -1158,12 +1201,44 @@ class ProjectCockpitPanel(QWidget):
             effort_minutes,
         )
 
+    def set_category_choices(
+        self,
+        folders: list[dict],
+        current_folder_id: int | None = None,
+    ):
+        self.category_combo.blockSignals(True)
+        self.category_combo.clear()
+        self.category_combo.addItem("All categories", None)
+        for row in folders or []:
+            label = str(row.get("path") or folder_display_name(row) or "Category")
+            self.category_combo.addItem(
+                folder_icon(row.get("icon_name")),
+                label,
+                int(row.get("id")),
+            )
+        idx = (
+            self.category_combo.findData(int(current_folder_id))
+            if current_folder_id is not None
+            else 0
+        )
+        self.category_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.category_combo.blockSignals(False)
+
     def set_project_choices(self, projects: list[dict], current_project_id: int | None = None):
+        self._all_project_choices = [dict(row) for row in (projects or [])]
         self.project_combo.blockSignals(True)
         self.project_combo.clear()
-        for row in projects or []:
-            label = str(row.get("description") or row.get("project_name") or f"Project {row.get('id')}")
-            self.project_combo.addItem(label, int(row.get("id")))
+        for row in self._all_project_choices:
+            project_name = str(
+                row.get("description") or row.get("project_name") or f"Project {row.get('id')}"
+            )
+            folder_path = str(row.get("folder_path") or "").strip()
+            label = f"{folder_path} / {project_name}" if folder_path else project_name
+            self.project_combo.addItem(
+                folder_icon(row.get("folder_icon_name")),
+                label,
+                int(row.get("id")),
+            )
         if self.project_combo.count() > 0:
             idx = self.project_combo.findData(current_project_id) if current_project_id is not None else 0
             self.project_combo.setCurrentIndex(idx if idx >= 0 else 0)

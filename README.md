@@ -31,6 +31,7 @@ CustomToDo is not for:
 
 ### Core work management
 - Hierarchical task tree with parent/child work, drag-and-drop ordering, archive/restore, and undo/redo
+- Category folders for grouping top-level tasks and projects without turning the folder itself into a task
 - Built-in perspectives: All, Today, Upcoming, Inbox, Someday, and Completed / Archive
 - Search, filters, saved views, and dense keyboard-first navigation
 - Custom columns with typed editors, including dates and editable lists

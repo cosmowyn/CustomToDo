@@ -13,6 +13,7 @@ The format is inspired by Keep a Changelog and uses straightforward dated entrie
 - Automated tests covering project-management schema migration, CRUD, validation, dashboard summaries, backup round-trips, search integration, and demo data
 - A dedicated project-health tree column so project health is visible directly in the main task list
 - PM-specific review categories for overdue milestones, deliverables due soon, and high-severity open risks
+- Category folders for grouping top-level tasks and projects without turning the folder itself into a task, including nested subcategories, folder filtering in the project cockpit, and folder customization for color, icon, and identifier metadata
 
 ### Changed
 

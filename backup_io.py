@@ -169,12 +169,21 @@ def export_payload(db: Database) -> dict:
                waiting_for,
                recurrence_rule_id, recurrence_origin_task_id, is_generated_occurrence,
                reminder_at, reminder_minutes_before, reminder_fired_at,
-               start_date, phase_id
+               start_date, phase_id, category_folder_id
         FROM tasks
         ORDER BY COALESCE(parent_id, 0), sort_order ASC, id ASC;
         """
     )
     tasks = [dict(r) for r in cur.fetchall()]
+
+    cur.execute(
+        """
+        SELECT id, name, parent_folder_id, sort_order, color_hex, icon_name, identifier, created_at, updated_at
+        FROM category_folders
+        ORDER BY sort_order ASC, LOWER(name), id ASC;
+        """
+    )
+    category_folders = [dict(r) for r in cur.fetchall()]
 
     cur.execute("SELECT task_id, column_id, value FROM task_custom_values;")
     rows = cur.fetchall()
@@ -347,6 +356,7 @@ def export_payload(db: Database) -> dict:
             for c in cols
         ],
         "tasks": tasks,
+        "category_folders": category_folders,
         "recurrence_rules": recurrence_rules,
         "saved_filter_views": saved_filter_views,
         "templates": templates,
@@ -451,6 +461,7 @@ def import_payload(parent: QWidget, payload: dict, target_db: Database) -> Impor
 
     src_cols = payload["custom_columns"]
     src_tasks = payload["tasks"]
+    src_category_folders = payload.get("category_folders") or []
     src_recurrence = payload.get("recurrence_rules") or []
     src_saved_views = payload.get("saved_filter_views") or []
     src_templates = payload.get("templates") or []
@@ -523,6 +534,7 @@ def import_payload(parent: QWidget, payload: dict, target_db: Database) -> Impor
                 cur.execute("DELETE FROM recurrence_rules;")
                 cur.execute("DELETE FROM tags;")
                 cur.execute("DELETE FROM tasks;")
+                cur.execute("DELETE FROM category_folders;")
                 cur.execute("DELETE FROM saved_filter_views;")
                 cur.execute("DELETE FROM task_templates;")
                 cur.execute("DELETE FROM project_register_entries;")
@@ -593,11 +605,26 @@ def import_payload(parent: QWidget, payload: dict, target_db: Database) -> Impor
                         (int(col_id), v, next_order),
                     )
 
+            folder_id_map = _import_category_folders(cur, src_category_folders, mode)
             task_id_map: dict[int, int] = {}
             if mode == "replace":
-                _import_tasks_keep_ids(cur, src_tasks, tgt_cols, report, task_id_map)
+                _import_tasks_keep_ids(
+                    cur,
+                    src_tasks,
+                    tgt_cols,
+                    report,
+                    task_id_map,
+                    folder_id_map,
+                )
             else:
-                _import_tasks_merge(cur, src_tasks, tgt_cols, report, task_id_map)
+                _import_tasks_merge(
+                    cur,
+                    src_tasks,
+                    tgt_cols,
+                    report,
+                    task_id_map,
+                    folder_id_map,
+                )
 
             _import_task_extras(cur, src_tasks, task_id_map)
             _import_recurrence(cur, src_recurrence, src_tasks, task_id_map)
@@ -622,7 +649,23 @@ def import_payload(parent: QWidget, payload: dict, target_db: Database) -> Impor
     return report
 
 
-def _task_insert_values(t: dict, parent_id, sort_order: int):
+def _task_insert_values(
+    t: dict,
+    parent_id,
+    sort_order: int,
+    folder_id_map: dict[int, int] | None = None,
+):
+    category_folder_id = None
+    if t.get("category_folder_id") is not None:
+        try:
+            source_folder_id = int(t.get("category_folder_id"))
+            category_folder_id = (
+                folder_id_map.get(source_folder_id)
+                if folder_id_map is not None
+                else source_folder_id
+            )
+        except Exception:
+            category_folder_id = None
     return (
         t.get("description", ""),
         t.get("due_date"),
@@ -647,7 +690,100 @@ def _task_insert_values(t: dict, parent_id, sort_order: int):
         t.get("reminder_fired_at"),
         t.get("start_date"),
         t.get("phase_id"),
+        category_folder_id,
     )
+
+
+def _import_category_folders(cur, folders: list[dict], mode: str) -> dict[int, int]:
+    folder_id_map: dict[int, int] = {}
+    pending = {
+        int(row["id"]): row
+        for row in folders
+        if isinstance(row, dict) and row.get("id") is not None
+    }
+    max_passes = len(pending) + 5
+    passes = 0
+
+    while pending and passes < max_passes:
+        passes += 1
+        progress = 0
+
+        for old_id in list(pending.keys()):
+            row = pending[old_id]
+            parent_folder_id = row.get("parent_folder_id")
+            if parent_folder_id is None:
+                mapped_parent_id = None
+                can_insert = True
+            else:
+                old_parent_id = int(parent_folder_id)
+                if old_parent_id in folder_id_map:
+                    mapped_parent_id = folder_id_map[old_parent_id]
+                    can_insert = True
+                elif old_parent_id not in pending:
+                    mapped_parent_id = None
+                    can_insert = True
+                else:
+                    can_insert = False
+
+            if not can_insert:
+                continue
+
+            folder_values = (
+                str(row.get("name") or ""),
+                mapped_parent_id,
+                int(row.get("sort_order") or 1),
+                str(row.get("color_hex") or "").strip() or None,
+                str(row.get("icon_name") or "folder").strip() or "folder",
+                str(row.get("identifier") or "").strip() or None,
+                row.get("created_at") or now_iso(),
+                row.get("updated_at") or now_iso(),
+            )
+            if mode == "replace":
+                cur.execute(
+                    """
+                    INSERT INTO category_folders(
+                        id,
+                        name,
+                        parent_folder_id,
+                        sort_order,
+                        color_hex,
+                        icon_name,
+                        identifier,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    (old_id, *folder_values),
+                )
+                folder_id_map[old_id] = old_id
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO category_folders(
+                        name,
+                        parent_folder_id,
+                        sort_order,
+                        color_hex,
+                        icon_name,
+                        identifier,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    folder_values,
+                )
+                folder_id_map[old_id] = int(cur.lastrowid)
+            pending.pop(old_id, None)
+            progress += 1
+
+        if progress == 0:
+            raise BackupError(
+                "Import failed: could not resolve some category folder parent relations."
+            )
+
+    return folder_id_map
 
 
 def _import_tasks_keep_ids(
@@ -656,6 +792,7 @@ def _import_tasks_keep_ids(
     tgt_cols: dict,
     report: ImportReport,
     id_map: dict[int, int],
+    folder_id_map: dict[int, int],
 ) -> None:
     pending = {int(t["id"]): t for t in src_tasks if "id" in t}
     inserted = set()
@@ -682,10 +819,18 @@ def _import_tasks_keep_ids(
                                       waiting_for,
                                       recurrence_rule_id, recurrence_origin_task_id, is_generated_occurrence,
                                       reminder_at, reminder_minutes_before, reminder_fired_at,
-                                      start_date, phase_id)
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                                      start_date, phase_id, category_folder_id)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
-                    (tid, *_task_insert_values(t, parent_id, int(t.get("sort_order", 1)))),
+                    (
+                        tid,
+                        *_task_insert_values(
+                            t,
+                            parent_id,
+                            int(t.get("sort_order", 1)),
+                            folder_id_map,
+                        ),
+                    ),
                 )
 
                 report.imported_tasks += 1
@@ -707,10 +852,18 @@ def _import_tasks_keep_ids(
                                       waiting_for,
                                       recurrence_rule_id, recurrence_origin_task_id, is_generated_occurrence,
                                       reminder_at, reminder_minutes_before, reminder_fired_at,
-                                      start_date, phase_id)
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                                      start_date, phase_id, category_folder_id)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
-                    (tid, *_task_insert_values(t, None, int(t.get("sort_order", 1)))),
+                    (
+                        tid,
+                        *_task_insert_values(
+                            t,
+                            None,
+                            int(t.get("sort_order", 1)),
+                            folder_id_map,
+                        ),
+                    ),
                 )
                 report.imported_tasks += 1
                 inserted.add(tid)
@@ -722,7 +875,14 @@ def _import_tasks_keep_ids(
         raise BackupError("Import failed: could not resolve some parent/child relations (unexpected).")
 
 
-def _import_tasks_merge(cur, src_tasks: list[dict], tgt_cols: dict, report: ImportReport, id_map: dict[int, int]) -> None:
+def _import_tasks_merge(
+    cur,
+    src_tasks: list[dict],
+    tgt_cols: dict,
+    report: ImportReport,
+    id_map: dict[int, int],
+    folder_id_map: dict[int, int],
+) -> None:
     cur.execute("SELECT parent_id, COALESCE(MAX(sort_order), 0) AS mx FROM tasks GROUP BY parent_id;")
     max_by_parent = {r["parent_id"]: int(r["mx"]) for r in cur.fetchall()}
 
@@ -768,10 +928,10 @@ def _import_tasks_merge(cur, src_tasks: list[dict], tgt_cols: dict, report: Impo
                                   waiting_for,
                                   recurrence_rule_id, recurrence_origin_task_id, is_generated_occurrence,
                                   reminder_at, reminder_minutes_before, reminder_fired_at,
-                                  start_date, phase_id)
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                                  start_date, phase_id, category_folder_id)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
-                _task_insert_values(t, new_parent, sort_order),
+                _task_insert_values(t, new_parent, sort_order, folder_id_map),
             )
             new_id = int(cur.lastrowid)
             id_map[old_id] = new_id
@@ -793,10 +953,15 @@ def _import_tasks_merge(cur, src_tasks: list[dict], tgt_cols: dict, report: Impo
                                       waiting_for,
                                       recurrence_rule_id, recurrence_origin_task_id, is_generated_occurrence,
                                       reminder_at, reminder_minutes_before, reminder_fired_at,
-                                      start_date, phase_id)
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                                      start_date, phase_id, category_folder_id)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
-                    _task_insert_values(t, None, int(t.get("sort_order", 1))),
+                    _task_insert_values(
+                        t,
+                        None,
+                        int(t.get("sort_order", 1)),
+                        folder_id_map,
+                    ),
                 )
                 new_id = int(cur.lastrowid)
                 id_map[old_id] = new_id
@@ -1570,6 +1735,7 @@ def _validate_payload_shape(payload: dict) -> None:
         raise BackupError("Backup field 'recurrence_rules' must be a list if present.")
 
     for key in (
+        "category_folders",
         "project_profiles",
         "project_phases",
         "pm_dependencies",
@@ -1580,6 +1746,19 @@ def _validate_payload_shape(payload: dict) -> None:
     ):
         if key in payload and not isinstance(payload[key], list):
             raise BackupError(f"Backup field '{key}' must be a list if present.")
+
+    seen_folder_ids = set()
+    for folder in payload.get("category_folders") or []:
+        if not isinstance(folder, dict):
+            raise BackupError("Invalid category_folders entry (not an object).")
+        if "id" not in folder:
+            raise BackupError("Category folder missing 'id' in backup.")
+        folder_id = int(folder["id"])
+        if folder_id in seen_folder_ids:
+            raise BackupError(f"Duplicate category folder id in backup: {folder_id}")
+        seen_folder_ids.add(folder_id)
+        if not str(folder.get("name", "")).strip():
+            raise BackupError("Category folder with empty name found in backup.")
 
 
 def _sha256_canonical_json(obj: dict) -> str:

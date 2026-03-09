@@ -7,7 +7,7 @@ from typing import Optional
 from PySide6.QtCore import (
     Qt, QAbstractItemModel, QModelIndex, QMimeData, QByteArray, QSettings
 )
-from PySide6.QtGui import QColor, QUndoStack, QIcon
+from PySide6.QtGui import QColor, QUndoStack, QIcon, QFont
 
 from commands import (
     AddTaskCommand, DeleteSubtreeCommand, EditCellCommand, MoveNodeCommand,
@@ -15,6 +15,7 @@ from commands import (
     DeliverableMutationCommand, MilestoneMutationCommand, TaskMutationCommand,
     TaskCollectionMutationCommand, CreateTasksFromPayloadCommand,
 )
+from category_folders_ui import folder_display_name, folder_icon
 from project_intelligence import analyze_projects
 from project_management import PROJECT_HEALTH_LABELS
 from theme import ThemeManager
@@ -98,13 +99,23 @@ def _best_contrast_text_color(bg: QColor) -> QColor:
 @dataclass
 class _Node:
     task: Optional[dict]
+    folder: Optional[dict]
     parent: Optional["_Node"]
     children: list["_Node"]
 
-    def __init__(self, task=None, parent=None):
+    def __init__(self, task=None, folder=None, parent=None):
         self.task = task
+        self.folder = folder
         self.parent = parent
         self.children = []
+
+    @property
+    def is_task(self) -> bool:
+        return self.task is not None
+
+    @property
+    def is_folder(self) -> bool:
+        return self.folder is not None
 
 
 class TaskTreeModel(QAbstractItemModel):
@@ -135,6 +146,7 @@ class TaskTreeModel(QAbstractItemModel):
         self.custom_cols = []
         self.root = _Node(task=None, parent=None)
         self._id_map: dict[int, _Node] = {}
+        self._folder_id_map: dict[int, _Node] = {}
         self._last_added_task_id: int | None = None
         self._project_health_cache: dict[int, dict] = {}
         self._project_management_health_cache: dict[int, dict] = {}
@@ -173,45 +185,95 @@ class TaskTreeModel(QAbstractItemModel):
         return rows
 
     def _rebuild_tree(self, tasks: list[dict]):
-        self.root = _Node(task=None, parent=None)
+        self.root = _Node(task=None, folder=None, parent=None)
         self._id_map = {}
+        self._folder_id_map = {}
 
-        for t in tasks:
-            n = _Node(task=t, parent=None)
-            self._id_map[int(t["id"])] = n
+        folders = self.db.fetch_category_folders()
+        for folder in folders:
+            node = _Node(folder=dict(folder), parent=None)
+            self._folder_id_map[int(folder["id"])] = node
 
-        for t in tasks:
-            nid = int(t["id"])
-            parent_id = t.get("parent_id")
-            node = self._id_map[nid]
-
-            if parent_id is None:
+        for folder in folders:
+            folder_id = int(folder["id"])
+            parent_folder_id = folder.get("parent_folder_id")
+            node = self._folder_id_map[folder_id]
+            if parent_folder_id is None:
+                node.parent = self.root
+                self.root.children.append(node)
+                continue
+            parent_node = self._folder_id_map.get(int(parent_folder_id))
+            if parent_node is None:
                 node.parent = self.root
                 self.root.children.append(node)
             else:
-                p = self._id_map.get(int(parent_id))
-                if p is None:
-                    node.parent = self.root
-                    self.root.children.append(node)
-                else:
-                    node.parent = p
-                    p.children.append(node)
+                node.parent = parent_node
+                parent_node.children.append(node)
 
-        def sort_children(n: _Node):
-            n.children.sort(
-                key=lambda x: (
-                    int(x.task.get("sort_order", 1)) if x.task else 1,
-                    int(x.task.get("id", 0)) if x.task else 0,
-                )
+        for task in tasks:
+            node = _Node(task=task, parent=None)
+            self._id_map[int(task["id"])] = node
+
+        for task in tasks:
+            task_id = int(task["id"])
+            parent_id = task.get("parent_id")
+            node = self._id_map[task_id]
+
+            if parent_id is not None:
+                parent_node = self._id_map.get(int(parent_id))
+                if parent_node is not None:
+                    node.parent = parent_node
+                    parent_node.children.append(node)
+                    continue
+
+            folder_id = task.get("category_folder_id")
+            folder_node = (
+                self._folder_id_map.get(int(folder_id))
+                if folder_id is not None
+                else None
             )
-            for ch in n.children:
-                sort_children(ch)
+            if folder_node is not None:
+                node.parent = folder_node
+                folder_node.children.append(node)
+            else:
+                node.parent = self.root
+                self.root.children.append(node)
+
+        def sort_children(node: _Node):
+            def _sort_key(child: _Node):
+                if child.folder:
+                    return (
+                        0,
+                        int(child.folder.get("sort_order") or 0),
+                        str(child.folder.get("name") or "").lower(),
+                        int(child.folder.get("id") or 0),
+                    )
+                return (
+                    1,
+                    int(child.task.get("sort_order") or 0) if child.task else 0,
+                    int(child.task.get("id") or 0) if child.task else 0,
+                )
+
+            node.children.sort(key=_sort_key)
+            for child in node.children:
+                sort_children(child)
 
         sort_children(self.root)
 
     # ---------- Helpers ----------
     def node_for_id(self, task_id: int) -> Optional[_Node]:
         return self._id_map.get(int(task_id))
+
+    def folder_node_for_id(self, folder_id: int) -> Optional[_Node]:
+        return self._folder_id_map.get(int(folder_id))
+
+    def folder_id_from_index(self, index: QModelIndex) -> Optional[int]:
+        if not index.isValid():
+            return None
+        node = index.internalPointer()
+        if not node or not node.folder:
+            return None
+        return int(node.folder["id"])
 
     def max_nesting_levels(self) -> int:
         return self.MAX_NESTING_LEVELS
@@ -266,6 +328,9 @@ class TaskTreeModel(QAbstractItemModel):
         if not node or not node.task:
             return None
         return int(node.task["id"])
+
+    def category_folders(self) -> list[dict]:
+        return self.db.fetch_category_folders()
 
     def column_key(self, logical_index: int) -> str:
         if logical_index < len(self.core_cols):
@@ -467,12 +532,19 @@ class TaskTreeModel(QAbstractItemModel):
         if not index.isValid():
             return Qt.ItemFlag.ItemIsDropEnabled
 
+        node = index.internalPointer()
+        if node and node.folder:
+            return Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
+
         base = (
             Qt.ItemFlag.ItemIsSelectable
             | Qt.ItemFlag.ItemIsEnabled
             | Qt.ItemFlag.ItemIsDragEnabled
             | Qt.ItemFlag.ItemIsDropEnabled
         )
+        if node and node.parent and node.parent.folder:
+            base &= ~Qt.ItemFlag.ItemIsDragEnabled
+            base &= ~Qt.ItemFlag.ItemIsDropEnabled
         key = self.column_key(index.column())
         if key not in {
             "last_update",
@@ -516,6 +588,10 @@ class TaskTreeModel(QAbstractItemModel):
         new_parent_node = self.root if not parent.isValid() else parent.internalPointer()
         if not new_parent_node:
             new_parent_node = self.root
+        if new_parent_node.folder:
+            return False
+        if dragged.parent and dragged.parent.folder:
+            return False
 
         cur = new_parent_node
         while cur and cur.task:
@@ -552,7 +628,46 @@ class TaskTreeModel(QAbstractItemModel):
             return None
 
         node = index.internalPointer()
-        if not node or not node.task:
+        if not node:
+            return None
+
+        if node.folder:
+            folder = node.folder
+            display_name = folder_display_name(folder)
+
+            if role == Qt.ItemDataRole.DisplayRole:
+                return display_name if index.column() == 0 else ""
+            if role == Qt.ItemDataRole.EditRole:
+                return str(folder.get("name") or "") if index.column() == 0 else None
+            if role == Qt.ItemDataRole.DecorationRole and index.column() == 0:
+                return folder_icon(folder.get("icon_name"))
+            if role == Qt.ItemDataRole.ToolTipRole:
+                path = str(folder.get("path") or folder_name)
+                color = str(folder.get("color_hex") or "").strip()
+                icon_name = str(folder.get("icon_name") or "folder").strip()
+                parts = [path]
+                if color:
+                    parts.append(f"Color: {color}")
+                if icon_name:
+                    parts.append(f"Icon: {icon_name}")
+                return " | ".join(parts)
+            if role == Qt.ItemDataRole.FontRole and index.column() == 0:
+                font = QFont()
+                font.setBold(True)
+                return font
+            if role == Qt.ItemDataRole.ForegroundRole and index.column() == 0:
+                color = str(folder.get("color_hex") or "").strip()
+                return QColor(color) if color else None
+            if role == Qt.ItemDataRole.BackgroundRole:
+                color = str(folder.get("color_hex") or "").strip()
+                if color:
+                    c = QColor(color)
+                    c.setAlpha(26)
+                    return c
+                return QColor("#EEF2F7") if index.column() == 0 else None
+            return None
+
+        if not node.task:
             return None
 
         col = index.column()
@@ -854,6 +969,7 @@ class TaskTreeModel(QAbstractItemModel):
         due_date: str | None = None,
         priority: int | None = None,
         parent_id: int | None = None,
+        category_folder_id: int | None = None,
         planned_bucket: str | None = None,
         tags: list[str] | None = None,
         reminder_at: str | None = None,
@@ -890,6 +1006,9 @@ class TaskTreeModel(QAbstractItemModel):
             "reminder_at": reminder_at,
             "reminder_minutes_before": None,
             "reminder_fired_at": None,
+            "category_folder_id": (
+                None if effective_parent_id is not None else category_folder_id
+            ),
             "tags": list(tags or []),
             "custom": {},
         }
@@ -1186,8 +1305,42 @@ class TaskTreeModel(QAbstractItemModel):
             return None
         return self.db.project_id_for_task(int(task_id))
 
-    def list_project_candidates(self) -> list[dict]:
-        return self.db.list_project_candidates()
+    def list_category_folders(self) -> list[dict]:
+        return self.db.fetch_category_folders()
+
+    def create_category_folder(
+        self,
+        name: str,
+        parent_folder_id: int | None = None,
+        *,
+        color_hex: str | None = None,
+        icon_name: str | None = None,
+        identifier: str | None = None,
+    ) -> int:
+        folder_id = self.db.create_category_folder(
+            name,
+            parent_folder_id,
+            color_hex=color_hex,
+            icon_name=icon_name,
+            identifier=identifier,
+        )
+        self.reload_all(reset_header_state=False)
+        return folder_id
+
+    def update_category_folder(self, folder_id: int, payload: dict):
+        self.db.update_category_folder(int(folder_id), payload)
+        self.reload_all(reset_header_state=False)
+
+    def delete_category_folder(self, folder_id: int):
+        self.db.delete_category_folder(int(folder_id))
+        self.reload_all(reset_header_state=False)
+
+    def assign_task_to_category_folder(self, task_id: int, folder_id: int | None):
+        self.db.set_task_category_folder(int(task_id), folder_id)
+        self.reload_all(reset_header_state=False)
+
+    def list_project_candidates(self, folder_id: int | None = None) -> list[dict]:
+        return self.db.list_project_candidates(folder_id=folder_id)
 
     def fetch_project_dashboard(self, project_task_id: int) -> dict | None:
         return self.db.fetch_project_dashboard(int(project_task_id))
@@ -1708,8 +1861,18 @@ class TaskTreeModel(QAbstractItemModel):
             node.task["is_collapsed"] = 1 if collapsed else 0
 
     # ---------- Internal model helpers used by commands ----------
+    def _task_container_node(self, task: dict | None) -> _Node:
+        if task is None:
+            return self.root
+        folder_id = task.get("category_folder_id")
+        if folder_id is None:
+            return self.root
+        folder_node = self.folder_node_for_id(int(folder_id))
+        return folder_node if folder_node is not None else self.root
+
     def _model_insert_task(self, task_id: int, parent_id: int | None, row: int):
-        parent_node = self.root if parent_id is None else self.node_for_id(parent_id)
+        t = self.db.fetch_task_by_id(task_id)
+        parent_node = self._task_container_node(t) if parent_id is None else self.node_for_id(parent_id)
         if not parent_node:
             parent_node = self.root
 
@@ -1718,7 +1881,6 @@ class TaskTreeModel(QAbstractItemModel):
 
         self.beginInsertRows(parent_index, row, row)
 
-        t = self.db.fetch_task_by_id(task_id)
         node = _Node(task=t, parent=parent_node)
         self._id_map[int(task_id)] = node
         parent_node.children.insert(row, node)
