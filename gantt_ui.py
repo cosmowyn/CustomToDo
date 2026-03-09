@@ -172,7 +172,7 @@ class TimelineTreeWidget(QTreeWidget):
         super().mouseDoubleClickEvent(event)
 
     def mimeTypes(self):
-        return ["application/x-customtodo-gantt-row"]
+        return ["application/x-gridoryn-gantt-row"]
 
     def mimeData(self, items):
         if not items:
@@ -183,13 +183,13 @@ class TimelineTreeWidget(QTreeWidget):
             return QMimeData()
         mime = QMimeData()
         mime.setData(
-            "application/x-customtodo-gantt-row",
+            "application/x-gridoryn-gantt-row",
             QByteArray(str(item.data(0, Qt.ItemDataRole.UserRole)).encode("utf-8")),
         )
         return mime
 
     def dropEvent(self, event):
-        if not event.mimeData().hasFormat("application/x-customtodo-gantt-row"):
+        if not event.mimeData().hasFormat("application/x-gridoryn-gantt-row"):
             event.ignore()
             return
         current = self.currentItem()

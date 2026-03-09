@@ -10,11 +10,11 @@ from demo_data import build_demo_payload
 
 
 def test_release_metadata_uses_stable_product_name():
-    assert APP_NAME == "CustomToDo"
+    assert APP_NAME == "Gridoryn"
     assert APP_STORAGE_NAME == "CustomTaskManager"
-    assert APP_LOG_SLUG == "customtodo"
+    assert APP_LOG_SLUG == "gridoryn"
     assert buildfile.APP_NAME == APP_NAME
-    assert buildfile._release_basename().startswith("CustomToDo-1.0.0-")
+    assert buildfile._release_basename().startswith("Gridoryn-1.0.0-")
 
 
 def test_demo_payload_uses_fictionalized_owner_data():
@@ -28,11 +28,11 @@ def test_demo_payload_uses_fictionalized_owner_data():
 
 def test_release_docs_and_spec_match_product_name():
     readme = Path("README.md").read_text(encoding="utf-8")
-    assert readme.startswith("# CustomToDo")
+    assert readme.startswith("# Gridoryn")
     assert "<your-repo-url>" not in readme
     assert "https://github.com/cosmowyn/CustomToDo.git" in readme
-    assert "CustomToDo.spec" in readme
-    assert Path("CustomToDo.spec").exists()
+    assert "Gridoryn.spec" in readme
+    assert Path("Gridoryn.spec").exists()
 
 
 def test_release_checklist_uses_repo_relative_links():

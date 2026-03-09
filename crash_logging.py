@@ -15,7 +15,7 @@ from app_metadata import APP_LOG_SLUG, APP_NAME, APP_PROFILE, APP_VERSION
 from app_paths import app_data_dir
 
 
-LEGACY_LOG_SLUGS = ("customtaskmanager",)
+LEGACY_LOG_SLUGS = ("customtodo", "customtaskmanager")
 
 
 def logs_dir() -> Path:

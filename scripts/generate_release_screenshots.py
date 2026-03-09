@@ -78,7 +78,7 @@ def main() -> int:
 
     out_dir = PROJECT_ROOT / "docs" / "screenshots"
 
-    with tempfile.TemporaryDirectory(prefix="customtodo_screens_") as tmp_root:
+    with tempfile.TemporaryDirectory(prefix="gridoryn_screens_") as tmp_root:
         window = _prepare_window(Path(tmp_root))
         window.show()
         app.processEvents()

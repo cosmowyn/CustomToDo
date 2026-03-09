@@ -17,9 +17,9 @@ dist/
 pip-wheel-metadata/
 build_assets/icons/*.icns
 build_assets/icons/*.iconset/
-!CustomToDo.spec
+!Gridoryn.spec
 !build_assets/icons/
-!build_assets/icons/CustomToDo.icns
+!build_assets/icons/Gridoryn.icns
 local_signing/
 internal_signing/
 *.pfx
@@ -76,4 +76,3 @@ restored_tasks.sqlite3
 # Local environment files
 .env
 .env.*
-CustomToDo.spec

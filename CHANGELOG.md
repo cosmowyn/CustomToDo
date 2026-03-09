@@ -17,7 +17,7 @@ The format is inspired by Keep a Changelog and uses straightforward dated entrie
 
 ### Changed
 
-- Stable product branding was unified around `CustomToDo` across the app UI, packaging metadata, screenshots, and public docs while preserving legacy Qt storage identifiers for backward-compatible local data paths
+- The product has been rebranded from the previous mixed `CustomToDo` / `CustomTaskManager` naming to `Gridoryn` across the app UI, packaging metadata, screenshots, help text, and public docs while keeping legacy Qt storage identifiers for backward-compatible local data paths
 - Demo/sample data was expanded into a full showcase workspace with dense timelines, four populated projects, attachments, recurrence examples, richer templates, and cockpit-ready PM records
 - Demo/sample data now uses fictionalized people and sample content only
 - Embedded help and README were updated to document the project cockpit, phase search, milestones, deliverables, baselines, and workload planning

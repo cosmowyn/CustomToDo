@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for contributing to CustomToDo.
+Thanks for contributing to Gridoryn.
 
 ## Local Setup
 

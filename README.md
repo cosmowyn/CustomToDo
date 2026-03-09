@@ -1,12 +1,12 @@
-# CustomToDo
+# Gridoryn
 
-CustomToDo is a local-first desktop task and personal project management application built with Python, PySide6, and SQLite.
+Gridoryn is a local-first desktop task and personal project management application built with Python, PySide6, and SQLite.
 
 It combines a fast hierarchical task tree with review workflows, project cockpit planning, diagnostics, backups, and strong offline data ownership. It is designed for a single power user who wants serious planning capability without cloud accounts, team features, or a web backend.
 
 Current stable version: `v1.0.0`
 
-## Why CustomToDo
+## Why Gridoryn
 
 - Local-first: your data stays on your machine
 - Single-user by design: no accounts, sync, SaaS, or collaboration overhead
@@ -16,12 +16,12 @@ Current stable version: `v1.0.0`
 
 ## Who It Is For
 
-CustomToDo is for:
+Gridoryn is for:
 - solo operators managing complex personal or client-facing work
 - power users who want hierarchy, review, and project clarity in one desktop app
 - people who prefer explicit local control over cloud task managers
 
-CustomToDo is not for:
+Gridoryn is not for:
 - team collaboration
 - cloud sync or multi-device coordination through a hosted service
 - enterprise workflow management
@@ -88,8 +88,8 @@ CustomToDo is not for:
 ### Install
 
 ```bash
-git clone https://github.com/cosmowyn/CustomToDo.git
-cd CustomToDo
+git clone https://github.com/cosmowyn/CustomToDo.git Gridoryn
+cd Gridoryn
 python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
@@ -111,7 +111,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-On first launch, CustomToDo can open a Quick Start dialog that lets you:
+On first launch, Gridoryn can open a Quick Start dialog that lets you:
 - start with an empty workspace
 - load a full showcase demo into an empty workspace
 - open a separate demo workspace
@@ -130,7 +130,7 @@ A typical flow looks like this:
 
 ## Local Data and Safety
 
-CustomToDo is local-first. User data stays in the per-user application data location managed by Qt.
+Gridoryn is local-first. User data stays in the per-user application data location managed by Qt.
 
 Stored locally:
 - the primary SQLite database
@@ -174,7 +174,8 @@ python buildfile.py
 The build helper:
 - reads the stable app name and version from [app_metadata.py](app_metadata.py)
 - uses stable local icon/splash assets automatically when they are present
-- supports optional asset overrides through `CUSTOMTODO_ICON` and `CUSTOMTODO_SPLASH`
+- supports optional asset overrides through `GRIDORYN_ICON` and `GRIDORYN_SPLASH`
+- still accepts the legacy `CUSTOMTODO_ICON` and `CUSTOMTODO_SPLASH` variables for backward-compatible local build scripts
 - builds a PyInstaller desktop artifact
 - stages a versioned release copy under `dist/release/`
 - writes `dist/release_manifest.json`
@@ -182,9 +183,9 @@ The build helper:
 ### Packaging notes
 - the stable repo includes a tracked macOS `.icns` icon asset
 - macOS icon conversion is handled through `sips` and `iconutil` when needed
-- Windows builds can supply a `.ico` through `CUSTOMTODO_ICON`
+- Windows builds can supply a `.ico` through `GRIDORYN_ICON`
 - local/private signing material is intentionally excluded from the stable branch and release flow
-- the stable PyInstaller spec file is [CustomToDo.spec](CustomToDo.spec)
+- the stable PyInstaller spec file is [Gridoryn.spec](Gridoryn.spec)
 
 ### Release checklist
 - [docs/release-checklist.md](docs/release-checklist.md)
@@ -231,7 +232,7 @@ crash_logging.py            Crash and operation logging
 demo_data.py                Showcase demo workspace generation
 workspace_profiles.py       Multi-workspace local profile handling
 buildfile.py                Local build helper
-CustomToDo.spec             Stable PyInstaller spec
+Gridoryn.spec               Stable PyInstaller spec
 ```
 
 ## License

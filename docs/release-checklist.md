@@ -36,5 +36,5 @@ Use this checklist before cutting a public stable release.
 ## Distribution safety
 
 - Confirm no local signing material is being staged or packaged.
-- Confirm the build output uses the stable product name `CustomToDo`.
+- Confirm the build output uses the stable product name `Gridoryn`.
 - Confirm logs, screenshots, and demo data contain no private/personal sample data.

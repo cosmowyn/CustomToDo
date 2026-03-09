@@ -51,7 +51,7 @@ jobs:
           from filters_ui import FilterPanel
 
           app = QApplication([])
-          SettingsDialog(QSettings("CustomToDoTest", "CustomToDo"))
+          SettingsDialog(QSettings("GridorynTest", "Gridoryn"))
           CommandPaletteDialog([PaletteCommand("ping", "Ping")])
           FilterPanel(["Todo", "Done"])
           print("UI smoke ok")

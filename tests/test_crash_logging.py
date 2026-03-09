@@ -59,7 +59,7 @@ def test_log_event_writes_labeled_operation_block(tmp_path, monkeypatch):
 def test_list_log_paths_returns_newest_first(tmp_path, monkeypatch):
     logs_root = tmp_path / "logs"
     logs_root.mkdir()
-    older = logs_root / "customtaskmanager_2026-03-07.log"
+    older = logs_root / "customtodo_2026-03-07.log"
     newer = logs_root / "customtaskmanager_2026-03-08.log"
     older.write_text("old", encoding="utf-8")
     newer.write_text("new", encoding="utf-8")

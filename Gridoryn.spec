@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['/Users/cosmowyn/Projects/CustomToDo/main.py'],
+    ['main.py'],
     pathex=[],
     binaries=[],
     datas=[],
@@ -21,7 +21,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='CustomToDo',
+    name='Gridoryn',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -32,7 +32,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['/Users/cosmowyn/Projects/CustomToDo/build_assets/icons/CustomToDo.icns'],
+    icon=['build_assets/icons/Gridoryn.icns'],
 )
 coll = COLLECT(
     exe,
@@ -41,11 +41,11 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='CustomToDo',
+    name='Gridoryn',
 )
 app = BUNDLE(
     coll,
-    name='CustomToDo.app',
-    icon='/Users/cosmowyn/Projects/CustomToDo/build_assets/icons/CustomToDo.icns',
+    name='Gridoryn.app',
+    icon='build_assets/icons/Gridoryn.icns',
     bundle_identifier=None,
 )
