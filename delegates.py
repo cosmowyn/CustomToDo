@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QDate, QDateTime, QTime, Signal, QEvent
+from PySide6.QtCore import Qt, QDate, QDateTime, QTime, Signal, QEvent, QTimer
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QPalette
 from PySide6.QtWidgets import (
-    QApplication, QStyledItemDelegate, QDateEdit, QSpinBox, QComboBox, QTreeView,
+    QApplication, QAbstractItemView, QStyledItemDelegate, QDateEdit, QSpinBox, QComboBox, QTreeView,
     QWidget, QHBoxLayout, QToolButton, QPushButton, QStyle, QStyleOptionViewItem
 )
 
@@ -225,6 +225,49 @@ class SmartDelegate(QStyledItemDelegate):
             cur = cur.parentWidget()
         return None
 
+    def _editor_belongs_to_view(self, editor) -> bool:
+        view = self.parent()
+        if not isinstance(view, QAbstractItemView):
+            return False
+        root = self._editor_root_for_widget(editor)
+        if root is None:
+            root = editor if isinstance(editor, QWidget) else None
+        if root is None:
+            return False
+        try:
+            cur = root
+            viewport = view.viewport()
+            while cur is not None:
+                if cur is viewport:
+                    return True
+                cur = cur.parentWidget()
+        except RuntimeError:
+            return False
+        return False
+
+    def _close_editor_if_owned(self, editor):
+        root = self._editor_root_for_widget(editor)
+        if root is None:
+            root = editor if isinstance(editor, QWidget) else None
+        if root is None or not self._editor_belongs_to_view(root):
+            return
+        try:
+            self.closeEditor.emit(root, QStyledItemDelegate.EndEditHint.NoHint)
+        except RuntimeError:
+            return
+
+    def _commit_and_close_editor(self, editor):
+        root = self._editor_root_for_widget(editor)
+        if root is None:
+            root = editor if isinstance(editor, QWidget) else None
+        if root is None or not self._editor_belongs_to_view(root):
+            return
+        try:
+            self.commitData.emit(root)
+        except RuntimeError:
+            return
+        QTimer.singleShot(0, lambda root=root: self._close_editor_if_owned(root))
+
     def _source_model_and_index(self, index):
         m = index.model()
         if hasattr(m, "mapToSource"):
@@ -401,8 +444,7 @@ class SmartDelegate(QStyledItemDelegate):
             if key in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
                 root = self._editor_root_for_widget(editor)
                 if root is not None:
-                    self.commitData.emit(root)
-                    self.closeEditor.emit(root, QStyledItemDelegate.EndEditHint.NoHint)
+                    self._commit_and_close_editor(root)
                     return True
         if isinstance(editor, DateTimeEditorWithClear):
             if editor.picker_open() and event.type() in {QEvent.Type.FocusOut, QEvent.Type.Hide}:
@@ -466,16 +508,14 @@ class SmartDelegate(QStyledItemDelegate):
         if ctype == "date":
             ed = DateEditorWithClear(parent)
             ed.setMinimumHeight(option.fontMetrics.height() + self.EXTRA_VPAD)
-            ed.clearRequested.connect(lambda: self.commitData.emit(ed))
-            ed.clearRequested.connect(lambda: self.closeEditor.emit(ed, QStyledItemDelegate.EndEditHint.NoHint))
+            ed.clearRequested.connect(lambda ed=ed: self._commit_and_close_editor(ed))
             self._install_editor_event_filters(ed)
             return ed
 
         if ctype == "datetime":
             ed = DateTimeEditorWithClear(parent)
             ed.setMinimumHeight(option.fontMetrics.height() + self.EXTRA_VPAD)
-            ed.clearRequested.connect(lambda: self.commitData.emit(ed))
-            ed.clearRequested.connect(lambda: self.closeEditor.emit(ed, QStyledItemDelegate.EndEditHint.NoHint))
+            ed.clearRequested.connect(lambda ed=ed: self._commit_and_close_editor(ed))
             self._install_editor_event_filters(ed)
             return ed
 

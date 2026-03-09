@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QKeySequence, QTextDocument
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -24,6 +25,14 @@ from ui_layout import polish_button_layouts
 
 def _sc(value: str | QKeySequence.StandardKey) -> str:
     return f"<code>{shortcut_display_text(value)}</code>"
+
+
+def _help_body_font_css() -> str:
+    app = QApplication.instance()
+    if app is None:
+        return "sans-serif"
+    family = str(app.font().family() or "").strip().replace("'", "\\'")
+    return f"'{family}'" if family else "sans-serif"
 
 
 @dataclass
@@ -868,7 +877,7 @@ def _build_help_html() -> str:
     <html>
       <head>
         <style>
-          body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; line-height: 1.5; }}
+          body {{ font-family: {_help_body_font_css()}; line-height: 1.5; }}
           code {{ background: #f2f2f2; padding: 2px 4px; border-radius: 3px; }}
           h1, h2 {{ margin-bottom: 0.25em; }}
           hr {{ margin: 18px 0; }}

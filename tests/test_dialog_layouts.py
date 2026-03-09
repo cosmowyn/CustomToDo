@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QSettings
 
 from columns_ui import AddColumnDialog, RemoveColumnDialog
-from help_ui import HelpDialog
+from help_ui import HelpDialog, _build_help_html
 from settings_ui import SettingsDialog
 from template_vars_ui import TemplateVariablesDialog
 from ui_layout import (
@@ -88,3 +88,10 @@ def test_help_dialog_buttons_get_sane_minimum_widths(qapp):
     assert dialog.btn_home.minimumWidth() >= button_minimum_size(
         dialog.btn_home
     ).width()
+
+
+def test_help_html_uses_runtime_app_font_not_apple_system_alias(qapp):
+    html = _build_help_html()
+
+    assert "-apple-system" not in html
+    assert "font-family:" in html

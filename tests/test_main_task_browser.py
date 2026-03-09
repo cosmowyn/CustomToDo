@@ -234,3 +234,40 @@ def test_semantic_row_coloring_is_limited_to_first_visible_cell(
     finally:
         window.close()
         qapp.processEvents()
+
+
+def test_custom_columns_expand_horizontal_scroll_range_without_manual_resize(
+    tmp_path,
+    qapp,
+    monkeypatch,
+):
+    window = _build_window(tmp_path, qapp, monkeypatch)
+    try:
+        window._set_tree_visible(True, show_message=False)
+        qapp.processEvents()
+        assert window.model.add_task_with_values("Scroll Width Test")
+        qapp.processEvents()
+
+        initial_max = int(window.view.horizontalScrollBar().maximum())
+        for name in (
+            "Impact score",
+            "Owner rating",
+            "Risk band",
+            "Client note",
+            "Region",
+            "Stage note",
+            "Extra 1",
+            "Extra 2",
+        ):
+            window.model.add_custom_column(name, "text")
+        qapp.processEvents()
+        qapp.processEvents()
+
+        expected_max = window._expected_task_header_scroll_maximum()
+        actual_max = int(window.view.horizontalScrollBar().maximum())
+
+        assert expected_max > initial_max
+        assert actual_max == expected_max
+    finally:
+        window.close()
+        qapp.processEvents()

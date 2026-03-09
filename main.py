@@ -224,6 +224,9 @@ class MainWindow(QMainWindow):
         hdr.setSectionsMovable(True)
         hdr.setStretchLastSection(False)
         self._task_header_layout_pending = False
+        self._task_header_layout_force = False
+        self._task_header_scroll_sync_pending = False
+        self._task_header_scroll_sync_attempts = 0
         self._task_header_layout_signature: tuple | None = None
 
         self.view.setRootIsDecorated(True)
@@ -464,7 +467,9 @@ class MainWindow(QMainWindow):
         self.model.modelReset.connect(self._schedule_active_task_view_refresh)
         self.proxy.modelReset.connect(self._schedule_active_task_view_refresh)
         self.model.modelReset.connect(self._schedule_task_header_layout)
+        self.model.modelReset.connect(self._schedule_task_header_scroll_sync)
         self.proxy.modelReset.connect(self._schedule_task_header_layout)
+        self.proxy.modelReset.connect(self._schedule_task_header_scroll_sync)
         self.model.modelReset.connect(self._mark_project_panel_dirty)
         self.proxy.modelReset.connect(self._mark_project_panel_dirty)
         self.model.dataChanged.connect(lambda *_: self._schedule_calendar_marker_refresh())
@@ -5428,9 +5433,50 @@ class MainWindow(QMainWindow):
             int(self.view.width()),
             int(header.width()),
             int(header.count()),
+            int(header.length()),
             self.view.font().toString(),
             tuple(bool(self.view.isColumnHidden(i)) for i in range(self.proxy.columnCount())),
         )
+
+    def _expected_task_header_scroll_maximum(self) -> int:
+        header = self.view.header()
+        viewport_width = max(0, int(self.view.viewport().width()))
+        return max(0, int(header.length()) - viewport_width)
+
+    def _task_header_scroll_range_is_stale(self) -> bool:
+        if not hasattr(self, "view") or self.view.model() is None:
+            return False
+        header = self.view.header()
+        if header.count() <= 0:
+            return False
+        if self.view.viewport().width() <= 0:
+            return False
+        bar = self.view.horizontalScrollBar()
+        return abs(int(bar.maximum()) - self._expected_task_header_scroll_maximum()) > 1
+
+    def _schedule_task_header_scroll_sync(self):
+        if self._task_header_scroll_sync_pending:
+            return
+        self._task_header_scroll_sync_pending = True
+        QTimer.singleShot(0, self._flush_task_header_scroll_sync)
+
+    def _flush_task_header_scroll_sync(self):
+        self._task_header_scroll_sync_pending = False
+        if not hasattr(self, "view") or self.view.model() is None:
+            self._task_header_scroll_sync_attempts = 0
+            return
+        if not self._is_task_table_visible():
+            self._task_header_scroll_sync_attempts = 0
+            return
+        self.view.updateGeometries()
+        self.view.header().updateGeometry()
+        self.view.header().viewport().update()
+        self.view.viewport().update()
+        if self._task_header_scroll_range_is_stale() and self._task_header_scroll_sync_attempts < 2:
+            self._task_header_scroll_sync_attempts += 1
+            self._schedule_task_header_scroll_sync()
+            return
+        self._task_header_scroll_sync_attempts = 0
 
     def _apply_task_header_layout(self, *, force: bool = False):
         with measure_ui("main._apply_task_header_layout", visible=bool(self._is_task_table_visible())):
@@ -5444,11 +5490,12 @@ class MainWindow(QMainWindow):
             if not force and not self.isVisible():
                 return
             if not force and (self.view.width() <= 0 or header.width() <= 0):
-                self._schedule_task_header_layout()
+                self._schedule_task_header_layout(force=force)
                 return
             signature = self._task_header_layout_signature_for_current_state()
             repaired = self._repair_task_header_section_widths()
-            if signature == self._task_header_layout_signature and not repaired:
+            range_stale = self._task_header_scroll_range_is_stale()
+            if not force and signature == self._task_header_layout_signature and not repaired and not range_stale:
                 return
             self.view.updateGeometries()
             header.updateGeometry()
@@ -5456,9 +5503,12 @@ class MainWindow(QMainWindow):
                 self.view.doItemsLayout()
             header.viewport().update()
             self.view.viewport().update()
-            self._task_header_layout_signature = signature
+            self._task_header_layout_signature = self._task_header_layout_signature_for_current_state()
+            if not force and self._task_header_scroll_range_is_stale():
+                self._schedule_task_header_layout(force=True)
 
-    def _schedule_task_header_layout(self):
+    def _schedule_task_header_layout(self, *, force: bool = False):
+        self._task_header_layout_force = self._task_header_layout_force or bool(force)
         if self._task_header_layout_pending:
             return
         self._task_header_layout_pending = True
@@ -5466,7 +5516,9 @@ class MainWindow(QMainWindow):
 
     def _flush_task_header_layout(self):
         self._task_header_layout_pending = False
-        self._apply_task_header_layout()
+        force = self._task_header_layout_force
+        self._task_header_layout_force = False
+        self._apply_task_header_layout(force=force)
 
     # ---------- Restore / save UI state ----------
     def _restore_ui_settings(self):
