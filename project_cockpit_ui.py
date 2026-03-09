@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -532,6 +532,19 @@ class ProjectCockpitPanel(QWidget):
         super().__init__(parent)
         self._current_project_id: int | None = None
         self._dashboard: dict | None = None
+        self._loading_dashboard = False
+        self._last_profile_signature = None
+        self._last_baseline_signature = None
+        self._profile_focus_widgets: set[QWidget] = set()
+        self._baseline_focus_widgets: set[QWidget] = set()
+        self._profile_save_timer = QTimer(self)
+        self._profile_save_timer.setSingleShot(True)
+        self._profile_save_timer.setInterval(0)
+        self._profile_save_timer.timeout.connect(self._emit_save_profile)
+        self._baseline_save_timer = QTimer(self)
+        self._baseline_save_timer.setSingleShot(True)
+        self._baseline_save_timer.setInterval(0)
+        self._baseline_save_timer.timeout.connect(self._emit_save_baseline)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
 
         root = QVBoxLayout(self)
@@ -587,6 +600,7 @@ class ProjectCockpitPanel(QWidget):
         self._build_register_tab()
         self._build_timeline_tab()
         self._build_capacity_tab()
+        self._install_auto_save_hooks()
 
         self.project_combo.currentIndexChanged.connect(self._emit_project_change)
 
@@ -726,8 +740,8 @@ class ProjectCockpitPanel(QWidget):
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
 
-        self.save_profile_btn.clicked.connect(self._emit_save_profile)
-        self.save_baseline_btn.clicked.connect(self._emit_save_baseline)
+        self.save_profile_btn.clicked.connect(self.request_immediate_profile_save)
+        self.save_baseline_btn.clicked.connect(self.request_immediate_baseline_save)
         self.add_phase_btn.clicked.connect(self._prompt_add_phase)
         self.rename_phase_btn.clicked.connect(self._prompt_rename_phase)
         self.delete_phase_btn.clicked.connect(self._prompt_delete_phase)
@@ -1013,10 +1027,122 @@ class ProjectCockpitPanel(QWidget):
         return QSize(620, min(540, self._preferred_panel_height()))
 
     def _emit_project_change(self):
+        self.flush_pending_saves()
         project_id = self.project_combo.currentData()
         if project_id is None:
             return
         self.projectSelected.emit(int(project_id))
+
+    def _install_auto_save_hooks(self):
+        self._profile_focus_widgets = {
+            self.objective_edit,
+            self.scope_edit,
+            self.out_of_scope_edit,
+            self.owner_edit,
+            self.stakeholders_edit,
+            self.success_criteria_edit,
+            self.summary_edit,
+            self.category_edit,
+        }
+        self._baseline_focus_widgets = {self.baseline_effort_spin}
+        for editor in self._profile_focus_widgets | self._baseline_focus_widgets:
+            editor.installEventFilter(self)
+
+        self.target_date_edit.date_edit.dateChanged.connect(self._schedule_profile_save)
+        self.target_date_edit.clearRequested.connect(self._schedule_profile_save)
+        self.health_override_combo.currentIndexChanged.connect(self._schedule_profile_save)
+        self.baseline_target_date.date_edit.dateChanged.connect(self._schedule_baseline_save)
+        self.baseline_target_date.clearRequested.connect(self._schedule_baseline_save)
+        self.baseline_effort_spin.editingFinished.connect(self._schedule_baseline_save)
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.FocusOut:
+            if watched in self._profile_focus_widgets:
+                self._schedule_profile_save()
+            elif watched in self._baseline_focus_widgets:
+                self._schedule_baseline_save()
+        return super().eventFilter(watched, event)
+
+    def _collect_profile_payload(self) -> dict:
+        return {
+            "objective": self.objective_edit.toPlainText(),
+            "scope": self.scope_edit.toPlainText(),
+            "out_of_scope": self.out_of_scope_edit.toPlainText(),
+            "owner": self.owner_edit.toPlainText().strip() or "Self",
+            "stakeholders": self.stakeholders_edit.toPlainText(),
+            "target_date": self.target_date_edit.iso_date(),
+            "success_criteria": self.success_criteria_edit.toPlainText(),
+            "project_status_health": self.health_override_combo.currentData(),
+            "summary": self.summary_edit.toPlainText(),
+            "category": self.category_edit.toPlainText(),
+        }
+
+    @staticmethod
+    def _profile_signature(payload: dict) -> tuple:
+        return (
+            str(payload.get("objective") or ""),
+            str(payload.get("scope") or ""),
+            str(payload.get("out_of_scope") or ""),
+            str(payload.get("owner") or ""),
+            str(payload.get("stakeholders") or ""),
+            payload.get("target_date"),
+            str(payload.get("success_criteria") or ""),
+            payload.get("project_status_health"),
+            str(payload.get("summary") or ""),
+            str(payload.get("category") or ""),
+        )
+
+    def _collect_baseline_values(self) -> tuple[str | None, int | None]:
+        effort = int(self.baseline_effort_spin.value())
+        return (
+            self.baseline_target_date.iso_date(),
+            None if effort < 0 else effort,
+        )
+
+    @staticmethod
+    def _baseline_signature(target_date: str | None, effort_minutes: int | None) -> tuple:
+        return (target_date, effort_minutes)
+
+    def _schedule_profile_save(self, *_):
+        if self._loading_dashboard or self._current_project_id is None:
+            return
+        payload = self._collect_profile_payload()
+        if self._profile_signature(payload) == self._last_profile_signature:
+            return
+        self._profile_save_timer.start()
+
+    def _schedule_baseline_save(self, *_):
+        if self._loading_dashboard or self._current_project_id is None:
+            return
+        target_date, effort_minutes = self._collect_baseline_values()
+        if self._baseline_signature(target_date, effort_minutes) == self._last_baseline_signature:
+            return
+        self._baseline_save_timer.start()
+
+    def request_immediate_profile_save(self):
+        self._profile_save_timer.stop()
+        self._emit_save_profile()
+
+    def request_immediate_baseline_save(self):
+        self._baseline_save_timer.stop()
+        self._emit_save_baseline()
+
+    def flush_pending_saves(self):
+        self.request_immediate_profile_save()
+        self.request_immediate_baseline_save()
+
+    def mark_profile_saved(self, payload: dict):
+        self._last_profile_signature = self._profile_signature(payload)
+
+    def mark_baseline_saved(
+        self,
+        target_date: str | None,
+        effort_minutes: int | None,
+    ):
+        self._last_baseline_signature = self._baseline_signature(
+            target_date,
+            effort_minutes,
+        )
 
     def set_project_choices(self, projects: list[dict], current_project_id: int | None = None):
         self.project_combo.blockSignals(True)
@@ -1030,6 +1156,9 @@ class ProjectCockpitPanel(QWidget):
         self.project_combo.blockSignals(False)
 
     def set_dashboard(self, dashboard: dict | None):
+        self._profile_save_timer.stop()
+        self._baseline_save_timer.stop()
+        self._loading_dashboard = True
         self._dashboard = dashboard or {}
         if not dashboard:
             self._current_project_id = None
@@ -1039,6 +1168,9 @@ class ProjectCockpitPanel(QWidget):
             self.summary_blockers_card.set_value("-")
             self.summary_deliverables_card.set_value("-")
             self._clear_tables()
+            self._last_profile_signature = None
+            self._last_baseline_signature = None
+            self._loading_dashboard = False
             return
 
         project = dashboard.get("project") or {}
@@ -1119,6 +1251,14 @@ class ProjectCockpitPanel(QWidget):
         self.baseline_target_date.set_iso_date(baseline.get("target_date"))
         baseline_effort = baseline.get("effort_minutes")
         self.baseline_effort_spin.setValue(-1 if baseline_effort is None else max(-1, int(baseline_effort)))
+        self._last_profile_signature = self._profile_signature(
+            self._collect_profile_payload()
+        )
+        target_date, effort_minutes = self._collect_baseline_values()
+        self._last_baseline_signature = self._baseline_signature(
+            target_date,
+            effort_minutes,
+        )
 
         self.phases_list.clear()
         for row in phases:
@@ -1139,6 +1279,7 @@ class ProjectCockpitPanel(QWidget):
             else "Timeline needs dated tasks, milestones, or deliverables."
         )
         self._populate_capacity(capacity)
+        self._loading_dashboard = False
 
     def _populate_milestones_table(self, milestones: list[dict]):
         self.milestones_table.setRowCount(0)
@@ -1336,28 +1477,21 @@ class ProjectCockpitPanel(QWidget):
     def _emit_save_profile(self):
         if self._current_project_id is None:
             return
-        payload = {
-            "objective": self.objective_edit.toPlainText(),
-            "scope": self.scope_edit.toPlainText(),
-            "out_of_scope": self.out_of_scope_edit.toPlainText(),
-            "owner": self.owner_edit.toPlainText().strip() or "Self",
-            "stakeholders": self.stakeholders_edit.toPlainText(),
-            "target_date": self.target_date_edit.iso_date(),
-            "success_criteria": self.success_criteria_edit.toPlainText(),
-            "project_status_health": self.health_override_combo.currentData(),
-            "summary": self.summary_edit.toPlainText(),
-            "category": self.category_edit.toPlainText(),
-        }
+        payload = self._collect_profile_payload()
+        if self._profile_signature(payload) == self._last_profile_signature:
+            return
         self.saveProfileRequested.emit(int(self._current_project_id), payload)
 
     def _emit_save_baseline(self):
         if self._current_project_id is None:
             return
-        effort = int(self.baseline_effort_spin.value())
+        target_date, effort = self._collect_baseline_values()
+        if self._baseline_signature(target_date, effort) == self._last_baseline_signature:
+            return
         self.saveBaselineRequested.emit(
             int(self._current_project_id),
-            self.baseline_target_date.iso_date(),
-            None if effort < 0 else effort,
+            target_date,
+            effort,
         )
 
     def _selected_phase_id(self) -> int | None:

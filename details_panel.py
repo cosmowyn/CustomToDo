@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QCheckBox,
@@ -41,6 +41,7 @@ def _safe_int(value, default=0):
 
 
 class TaskDetailsPanel(QWidget):
+    saveRequested = Signal(int, dict)
     previousParentRequested = Signal()
     nextParentRequested = Signal()
     previousChildRequested = Signal()
@@ -52,6 +53,13 @@ class TaskDetailsPanel(QWidget):
         super().__init__(parent)
 
         self._task_id: int | None = None
+        self._loading_details = False
+        self._last_saved_signature = None
+        self._focus_save_widgets: set[QWidget] = set()
+        self._auto_save_timer = QTimer(self)
+        self._auto_save_timer.setSingleShot(True)
+        self._auto_save_timer.setInterval(0)
+        self._auto_save_timer.timeout.connect(self._emit_save_if_dirty)
 
         root = QVBoxLayout(self)
         configure_box_layout(root, margins=(8, 8, 8, 8), spacing=10)
@@ -274,6 +282,7 @@ class TaskDetailsPanel(QWidget):
         self.next_child_btn.clicked.connect(self.nextChildRequested.emit)
         self.toggle_table_btn.clicked.connect(self.toggleTableRequested.emit)
         self.parent_jump.currentIndexChanged.connect(self._emit_parent_jump)
+        self._install_auto_save_hooks()
 
     def sizeHint(self) -> QSize:
         return QSize(520, 640)
@@ -288,6 +297,75 @@ class TaskDetailsPanel(QWidget):
 
     def task_id(self) -> int | None:
         return self._task_id
+
+    def _install_auto_save_hooks(self):
+        for editor in (self.notes, self.effort_minutes, self.actual_minutes):
+            editor.installEventFilter(self)
+            self._focus_save_widgets.add(editor)
+
+        for editor in (self.tags, self.waiting_for, self.depends_on):
+            editor.editingFinished.connect(self._schedule_auto_save)
+
+        for combo in (self.bucket, self.phase, self.recurrence):
+            combo.currentIndexChanged.connect(self._schedule_auto_save)
+
+        self.recurrence_next_on_done.toggled.connect(self._schedule_auto_save)
+        self.start_date.date_edit.dateChanged.connect(self._schedule_auto_save)
+        self.start_date.clearRequested.connect(self._schedule_auto_save)
+        self.effort_minutes.editingFinished.connect(self._schedule_auto_save)
+        self.actual_minutes.editingFinished.connect(self._schedule_auto_save)
+
+    def eventFilter(self, watched, event):
+        if (
+            watched in self._focus_save_widgets
+            and event.type() == QEvent.Type.FocusOut
+        ):
+            self._schedule_auto_save()
+        return super().eventFilter(watched, event)
+
+    @staticmethod
+    def _payload_signature(payload: dict) -> tuple:
+        return (
+            str(payload.get("notes") or ""),
+            tuple(str(tag) for tag in (payload.get("tags") or [])),
+            str(payload.get("bucket") or ""),
+            payload.get("start_date"),
+            payload.get("phase_id"),
+            str(payload.get("waiting_for") or ""),
+            tuple(int(dep) for dep in (payload.get("dependencies") or [])),
+            payload.get("recurrence"),
+            bool(payload.get("recurrence_next_on_done")),
+            payload.get("effort_minutes"),
+            int(payload.get("actual_minutes") or 0),
+        )
+
+    def _schedule_auto_save(self, *_):
+        if self._loading_details or self._task_id is None:
+            return
+        if self._payload_signature(self.collect_payload()) == self._last_saved_signature:
+            return
+        self._auto_save_timer.start()
+
+    def _emit_save_if_dirty(self):
+        if self._loading_details or self._task_id is None:
+            return
+        payload = self.collect_payload()
+        signature = self._payload_signature(payload)
+        if signature == self._last_saved_signature:
+            return
+        self.saveRequested.emit(int(self._task_id), payload)
+
+    def request_immediate_save(self):
+        self._auto_save_timer.stop()
+        self._emit_save_if_dirty()
+
+    def flush_pending_save(self):
+        self.request_immediate_save()
+
+    def mark_saved(self, task_id: int, payload: dict):
+        if self._task_id is None or int(task_id) != int(self._task_id):
+            return
+        self._last_saved_signature = self._payload_signature(payload)
 
     def _emit_parent_jump(self, index: int):
         if index < 0:
@@ -312,6 +390,8 @@ class TaskDetailsPanel(QWidget):
         return aid, path
 
     def set_task_details(self, details: dict | None):
+        self._auto_save_timer.stop()
+        self._loading_details = True
         self._task_id = int(details["id"]) if details and details.get("id") is not None else None
         if not details:
             self.meta.setText("No task selected")
@@ -334,6 +414,8 @@ class TaskDetailsPanel(QWidget):
             self.reminder_before_minutes.setValue(0)
             self.attachments.clear()
             self.attachments_stack.set_has_content(False)
+            self._last_saved_signature = None
+            self._loading_details = False
             return
 
         progress = details.get("child_progress") or {}
@@ -453,6 +535,8 @@ class TaskDetailsPanel(QWidget):
             item.setData(Qt.ItemDataRole.UserRole + 1, path)
             self.attachments.addItem(item)
         self.attachments_stack.set_has_content(self.attachments.count() > 0)
+        self._last_saved_signature = self._payload_signature(self.collect_payload())
+        self._loading_details = False
 
     def set_navigation_state(
         self,

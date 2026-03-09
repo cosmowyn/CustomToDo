@@ -985,7 +985,10 @@ class MainWindow(QMainWindow):
         self._configure_dock_widget(self.details_dock)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.details_dock)
 
-        self.details_panel.save_btn.clicked.connect(self._save_details_from_panel)
+        self.details_panel.saveRequested.connect(self._save_details_from_panel)
+        self.details_panel.save_btn.clicked.connect(
+            self.details_panel.request_immediate_save
+        )
         self.details_panel.start_timer_btn.clicked.connect(self._details_start_timer)
         self.details_panel.stop_timer_btn.clicked.connect(self._details_stop_timer)
         self.details_panel.set_reminder_btn.clicked.connect(self._details_set_reminder)
@@ -1364,21 +1367,12 @@ class MainWindow(QMainWindow):
     def _update_task_table_placeholder(self):
         if not hasattr(self, "_table_placeholder"):
             return
-        floating = self._is_task_table_floating()
-        self._table_placeholder.setVisible(bool(floating))
-        if floating:
-            self._table_placeholder.setText(
-                "Task table is floating in a separate window.\n"
-                "Use View > Float task table to dock it back."
+        self._table_placeholder.hide()
+        central = self.centralWidget()
+        if central is not None:
+            central.setVisible(
+                not self._is_task_table_floating() and self._is_task_table_visible()
             )
-            self._table_placeholder.show()
-        elif not self._is_task_table_visible():
-            self._table_placeholder.setText(
-                "Task table is hidden.\nUse View > Task table to show it again."
-            )
-            self._table_placeholder.show()
-        else:
-            self._table_placeholder.hide()
 
     def _set_task_table_floating(self, floating: bool, *, show_after: bool | None = None):
         want_floating = bool(floating)
@@ -1503,6 +1497,7 @@ class MainWindow(QMainWindow):
                 )
         self.model.settings.setValue("ui/tree_visible", show_tree)
         self._refresh_task_browser()
+        self._update_task_table_placeholder()
         QTimer.singleShot(0, self._update_row_action_buttons)
 
     def _toggle_task_table_visibility(self):
@@ -1570,6 +1565,14 @@ class MainWindow(QMainWindow):
         if hasattr(self, "focus_panel"):
             self.focus_panel.set_current_summary("Current selection: none", None)
         self._clear_task_browser()
+
+    def _restore_task_focus_if_needed(self, task_id: int | None):
+        if task_id is None or not self._db_available():
+            return
+        current_task_id = self._selected_task_id()
+        if current_task_id == int(task_id):
+            return
+        self._focus_task_by_id(int(task_id))
 
     def _refresh_relationships_panel_from_details(self, details: dict | None):
         if not hasattr(self, "relationships_panel"):
@@ -1651,20 +1654,26 @@ class MainWindow(QMainWindow):
         self._refresh_project_panel_from_details(self._selected_task_details())
 
     def _project_panel_save_profile(self, project_task_id: int, payload: dict):
+        preserved_task_id = self._selected_task_id()
         try:
             self.model.save_project_profile(int(project_task_id), payload)
         except Exception as e:
             QMessageBox.warning(self, "Project save failed", str(e))
             return
+        self.project_panel.mark_profile_saved(payload)
         self._refresh_project_panel()
+        self._restore_task_focus_if_needed(preserved_task_id)
 
     def _project_panel_save_baseline(self, project_task_id: int, target_date: str | None, effort_minutes: int | None):
+        preserved_task_id = self._selected_task_id()
         try:
             self.model.save_project_baseline(int(project_task_id), target_date, effort_minutes)
         except Exception as e:
             QMessageBox.warning(self, "Baseline save failed", str(e))
             return
+        self.project_panel.mark_baseline_saved(target_date, effort_minutes)
         self._refresh_project_panel()
+        self._restore_task_focus_if_needed(preserved_task_id)
 
     def _project_panel_add_phase(self, project_task_id: int, name: str):
         try:
@@ -1825,31 +1834,48 @@ class MainWindow(QMainWindow):
             return
         self._refresh_project_panel()
 
-    def _save_details_from_panel(self):
-        tid = self.details_panel.task_id()
+    def _save_details_from_panel(
+        self,
+        task_id: int | None = None,
+        payload: dict | None = None,
+    ):
+        tid = (
+            int(task_id)
+            if task_id is not None
+            else self.details_panel.task_id()
+        )
         if tid is None:
             return
-        payload = self.details_panel.collect_payload()
+        detail_payload = dict(payload or self.details_panel.collect_payload())
+        preserved_task_id = self._selected_task_id()
         self.model.undo_stack.beginMacro("Update task details")
         try:
-            self.model.set_task_notes(int(tid), payload["notes"])
-            self.model.set_task_tags(int(tid), payload["tags"])
-            self.model.set_task_bucket(int(tid), payload["bucket"])
-            self.model.set_task_start_date(int(tid), payload.get("start_date"))
-            self.model.set_task_phase(int(tid), payload.get("phase_id"))
-            self.model.set_task_waiting_for(int(tid), payload["waiting_for"])
-            self.model.set_task_dependencies(int(tid), payload["dependencies"])
+            self.model.set_task_notes(int(tid), detail_payload["notes"])
+            self.model.set_task_tags(int(tid), detail_payload["tags"])
+            self.model.set_task_bucket(int(tid), detail_payload["bucket"])
+            self.model.set_task_start_date(int(tid), detail_payload.get("start_date"))
+            self.model.set_task_phase(int(tid), detail_payload.get("phase_id"))
+            self.model.set_task_waiting_for(int(tid), detail_payload["waiting_for"])
+            self.model.set_task_dependencies(int(tid), detail_payload["dependencies"])
             self.model.set_task_recurrence(
                 int(tid),
-                payload["recurrence"],
-                bool(payload["recurrence_next_on_done"]),
+                detail_payload["recurrence"],
+                bool(detail_payload["recurrence_next_on_done"]),
             )
-            self.model.set_task_effort_minutes(int(tid), payload["effort_minutes"])
-            self.model.set_task_actual_minutes(int(tid), payload["actual_minutes"])
+            self.model.set_task_effort_minutes(
+                int(tid),
+                detail_payload["effort_minutes"],
+            )
+            self.model.set_task_actual_minutes(
+                int(tid),
+                detail_payload["actual_minutes"],
+            )
         finally:
             self.model.undo_stack.endMacro()
+        self.details_panel.mark_saved(int(tid), detail_payload)
         self._refresh_details_dock()
         self._refresh_calendar_list()
+        self._restore_task_focus_if_needed(preserved_task_id)
 
     def _details_start_timer(self):
         tid = self.details_panel.task_id()
@@ -4156,6 +4182,10 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._update_row_action_buttons)
 
     def _on_current_changed(self, *_):
+        if hasattr(self, "details_panel"):
+            self.details_panel.flush_pending_save()
+        if hasattr(self, "project_panel"):
+            self.project_panel.flush_pending_saves()
         self._update_row_action_buttons()
         self._refresh_active_task_views()
 
@@ -4180,6 +4210,7 @@ class MainWindow(QMainWindow):
         end_date: str | None,
     ):
         item_kind = str(kind or "").strip().lower()
+        preserved_task_id = self._selected_task_id()
         try:
             if item_kind == "task":
                 self.model.undo_stack.beginMacro("Reschedule task from planner")
@@ -4215,6 +4246,7 @@ class MainWindow(QMainWindow):
         self._refresh_review_panel()
         self._refresh_focus_panel()
         self._refresh_relationships_panel()
+        self._restore_task_focus_if_needed(preserved_task_id)
 
     def _move_selected_task_from_timeline(self, task_id: int, delta: int):
         tid = int(task_id or 0)

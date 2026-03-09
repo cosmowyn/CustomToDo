@@ -187,3 +187,68 @@ def test_project_timeline_can_create_task_directly_in_main_window(
     finally:
         window.close()
         qapp.processEvents()
+
+
+def test_details_auto_save_on_selection_change_preserves_new_focus(
+    tmp_path,
+    qapp,
+    monkeypatch,
+):
+    window = _build_window(tmp_path, qapp, monkeypatch)
+    try:
+        assert window.model.add_task_with_values("Project A")
+        parent_id = int(window.model.last_added_task_id())
+        assert window.model.add_task_with_values("Child A1", parent_id=parent_id)
+        child_one = int(window.model.last_added_task_id())
+        assert window.model.add_task_with_values("Child A2", parent_id=parent_id)
+        child_two = int(window.model.last_added_task_id())
+
+        window._focus_task_by_id(child_one)
+        qapp.processEvents()
+
+        window.details_panel.tags.setFocus()
+        window.details_panel.tags.setText("alpha, beta")
+        qapp.processEvents()
+
+        window._focus_task_by_id(child_two)
+        qapp.processEvents()
+
+        saved_details = window.model.task_details(child_one)
+        assert saved_details is not None
+        assert saved_details["tags"] == ["alpha", "beta"]
+        assert window._selected_task_id() == child_two
+        assert window.details_panel.task_id() == child_two
+    finally:
+        window.close()
+        qapp.processEvents()
+
+
+def test_project_profile_auto_save_keeps_active_task_selected(
+    tmp_path,
+    qapp,
+    monkeypatch,
+):
+    window = _build_window(tmp_path, qapp, monkeypatch)
+    try:
+        assert window.model.add_task_with_values("Project A")
+        project_id = int(window.model.last_added_task_id())
+        assert window.model.add_task_with_values("Child A1", parent_id=project_id)
+        child_id = int(window.model.last_added_task_id())
+
+        window.project_dock.show()
+        window._focus_task_by_id(child_id)
+        qapp.processEvents()
+
+        window.project_panel.objective_edit.setFocus()
+        window.project_panel.objective_edit.setPlainText("Ship a fictional launch")
+        window.view.setFocus()
+        qapp.processEvents()
+
+        dashboard = window.model.fetch_project_dashboard(project_id)
+        profile = dashboard.get("profile") or {}
+        assert profile.get("objective") == "Ship a fictional launch"
+        assert window._selected_task_id() == child_id
+        assert window.details_panel.task_id() == child_id
+    finally:
+        window.close()
+        qapp.processEvents()

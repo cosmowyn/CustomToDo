@@ -44,7 +44,8 @@ def test_task_table_toggle_and_side_panel_browsing(tmp_path, qapp, monkeypatch):
         assert window._float_table_act.isChecked() is True
         assert window._floating_table_window is not None
         assert window._floating_table_window.isVisible() is True
-        assert window._table_placeholder.isVisible() is True
+        assert window._table_placeholder.isVisible() is False
+        assert window.centralWidget().isVisible() is False
 
         assert window.model.add_task_with_values("Parent A")
         parent_a = int(window.model.last_added_task_id())
@@ -76,6 +77,7 @@ def test_task_table_toggle_and_side_panel_browsing(tmp_path, qapp, monkeypatch):
         assert window._toggle_table_act.isChecked() is False
         assert window.details_panel.toggle_table_btn.text() == "Show table"
         assert not window.controls_dock.isVisible()
+        assert window.centralWidget().isVisible() is False
 
         window._navigate_child_relative(1)
         qapp.processEvents()
@@ -100,6 +102,7 @@ def test_task_table_toggle_and_side_panel_browsing(tmp_path, qapp, monkeypatch):
         assert window._is_task_table_visible() is True
         assert window._toggle_table_act.isChecked() is True
         assert window.details_panel.toggle_table_btn.text() == "Hide table"
+        assert window.centralWidget().isVisible() is False
 
         window._set_task_table_floating(False)
         qapp.processEvents()
@@ -107,6 +110,7 @@ def test_task_table_toggle_and_side_panel_browsing(tmp_path, qapp, monkeypatch):
         assert window._float_table_act.isChecked() is False
         assert window._table_placeholder.isVisible() is False
         assert window._is_task_table_visible() is True
+        assert window.centralWidget().isVisible() is True
 
         window._focus_search_input()
         qapp.processEvents()

@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QVBoxLayout,
+    QWidget,
 )
 
 from app_metadata import APP_NAME
@@ -29,7 +34,7 @@ class WelcomeDialog(QDialog):
         self._action = self.ACTION_EMPTY
 
         self.setWindowTitle("Welcome")
-        self.resize(760, 520)
+        self.resize(980, 760)
 
         root = QVBoxLayout(self)
         configure_box_layout(root, margins=(10, 10, 10, 10), spacing=10)
@@ -54,6 +59,10 @@ class WelcomeDialog(QDialog):
         text.setWordWrap(True)
         intro_layout.addWidget(text)
         root.addWidget(intro)
+
+        screenshots = self._build_screenshot_panel()
+        if screenshots is not None:
+            root.addWidget(screenshots)
 
         shortcuts = QGroupBox("Useful starting points")
         shortcuts_layout = QVBoxLayout(shortcuts)
@@ -117,6 +126,59 @@ class WelcomeDialog(QDialog):
         self.help_btn.clicked.connect(lambda: self._finish(self.ACTION_HELP))
         self.review_btn.clicked.connect(lambda: self._finish(self.ACTION_REVIEW))
         self.cancel_btn.clicked.connect(self.reject)
+
+    def _build_screenshot_panel(self) -> QWidget | None:
+        screenshot_specs = [
+            ("Main workspace", "docs/screenshots/main-workspace.png"),
+            ("Project cockpit timeline", "docs/screenshots/project-cockpit-timeline.png"),
+            ("Review workflow", "docs/screenshots/review-workflow.png"),
+            ("Relationship inspector", "docs/screenshots/relationship-inspector.png"),
+        ]
+        available = []
+        base_dir = Path(__file__).resolve().parent
+        for title, rel_path in screenshot_specs:
+            path = base_dir / rel_path
+            if path.exists():
+                available.append((title, path))
+        if not available:
+            return None
+
+        panel = QGroupBox("See the workspace")
+        layout = QGridLayout(panel)
+        configure_box_layout(layout, margins=(8, 8, 8, 8), spacing=8)
+
+        for idx, (title, path) in enumerate(available):
+            cell = QWidget(panel)
+            cell_layout = QVBoxLayout(cell)
+            configure_box_layout(cell_layout, margins=(0, 0, 0, 0), spacing=4)
+
+            preview = QLabel(cell)
+            preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            preview.setToolTip(str(path))
+            preview.setMinimumSize(220, 130)
+            preview.setMaximumHeight(150)
+            pixmap = QPixmap(str(path))
+            if not pixmap.isNull():
+                preview.setPixmap(
+                    pixmap.scaled(
+                        320,
+                        150,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )
+            else:
+                preview.setText(title)
+
+            caption = QLabel(title, cell)
+            caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            caption.setWordWrap(True)
+
+            cell_layout.addWidget(preview)
+            cell_layout.addWidget(caption)
+            layout.addWidget(cell, idx // 2, idx % 2)
+
+        return panel
 
     def _finish(self, action: str):
         self._action = str(action or self.ACTION_EMPTY)
