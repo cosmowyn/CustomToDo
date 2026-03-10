@@ -1128,6 +1128,12 @@ class MainWindow(QMainWindow):
             self._project_panel_edit_milestone_dependencies
         )
         self.project_panel.focusTaskRequested.connect(self._focus_task_by_id)
+        self.project_panel.archiveTaskRequested.connect(
+            self._project_panel_archive_task
+        )
+        self.project_panel.deleteTaskRequested.connect(
+            self._project_panel_delete_task_permanently
+        )
         self.project_panel.timelineScheduleRequested.connect(
             self._project_panel_schedule_timeline_item
         )
@@ -2118,6 +2124,86 @@ class MainWindow(QMainWindow):
             "Task added from timeline. Drag or resize the bar to refine its schedule.",
             4000,
         )
+
+    def _project_panel_archive_task(self, task_id: int):
+        tid = int(task_id or 0)
+        if tid <= 0:
+            return
+        self._focus_task_by_id(tid)
+        focus_task_id = self._neighbor_task_id_before_removal([tid])
+        try:
+            self.model.archive_tasks([tid])
+            log_event(
+                "Planner task archived",
+                context="project.timeline.archive",
+                db_path=self.db.path,
+                details={"task_id": tid},
+            )
+        except Exception as e:
+            log_exception(e, context="project-timeline-archive", db_path=self.db.path)
+            QMessageBox.warning(self, "Archive failed", str(e))
+            return
+        self._mark_project_panel_dirty("project lifecycle")
+        QTimer.singleShot(
+            0,
+            lambda target=focus_task_id: self._restore_focus_after_removal(target),
+        )
+        self._refresh_project_panel()
+        self._refresh_details_dock()
+        self._refresh_calendar_list()
+        self._refresh_review_panel()
+        self._refresh_focus_panel()
+        self._refresh_relationships_panel()
+
+    def _project_panel_delete_task_permanently(self, task_id: int):
+        tid = int(task_id or 0)
+        if tid <= 0:
+            return
+        project_profile = self.db.fetch_project_profile(tid)
+        title = (
+            "Delete project permanently"
+            if project_profile is not None
+            else "Delete permanently"
+        )
+        message = (
+            "This will permanently delete the selected project root and its subtree.\n\nContinue?"
+            if project_profile is not None
+            else "This will permanently delete the selected task and its subtree.\n\nContinue?"
+        )
+        res = QMessageBox.warning(
+            self,
+            title,
+            message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if res != QMessageBox.StandardButton.Yes:
+            return
+        self._focus_task_by_id(tid)
+        focus_task_id = self._neighbor_task_id_before_removal([tid])
+        try:
+            self.model.hard_delete_tasks([tid])
+            log_event(
+                "Planner task deleted permanently",
+                context="project.timeline.delete",
+                db_path=self.db.path,
+                details={"task_id": tid, "is_project_root": project_profile is not None},
+            )
+        except Exception as e:
+            log_exception(e, context="project-timeline-delete", db_path=self.db.path)
+            QMessageBox.warning(self, "Delete permanently failed", str(e))
+            return
+        self._mark_project_panel_dirty("project lifecycle")
+        QTimer.singleShot(
+            0,
+            lambda target=focus_task_id: self._restore_focus_after_removal(target),
+        )
+        self._refresh_project_panel()
+        self._refresh_details_dock()
+        self._refresh_calendar_list()
+        self._refresh_review_panel()
+        self._refresh_focus_panel()
+        self._refresh_relationships_panel()
 
     def _project_panel_rename_phase(self, phase_id: int, name: str):
         try:

@@ -603,6 +603,30 @@ def test_gantt_view_child_task_creation_emits_child_parent(qapp):
     ]
 
 
+def test_gantt_view_delete_requests_emit_for_task_and_project_rows(qapp):
+    widget = ProjectGanttView()
+    widget.resize(1100, 480)
+    widget.set_dashboard(_sample_dashboard())
+
+    archived: list[int] = []
+    deleted: list[int] = []
+    widget.archiveTaskRequested.connect(archived.append)
+    widget.deleteTaskRequested.connect(deleted.append)
+
+    widget.select_item("task", 2)
+    assert widget.request_delete_selected(permanent=False) is True
+    assert widget.request_delete_selected(permanent=True) is True
+
+    widget.select_item("project", 1)
+    assert widget.request_delete_selected(permanent=False) is True
+
+    widget.select_item("milestone", 5)
+    assert widget.request_delete_selected(permanent=False) is False
+
+    assert archived == [2, 1]
+    assert deleted == [2]
+
+
 def test_gantt_view_milestone_and_deliverable_creation_emit_payloads(qapp):
     widget = ProjectGanttView()
     widget.resize(1100, 480)
@@ -729,6 +753,41 @@ def test_project_cockpit_re_emits_timeline_task_creation(qapp):
     assert emitted[0]["parent_id"] == 1
     assert emitted[0]["phase_id"] == 10
     assert emitted[0]["description"] == "New task"
+
+
+def test_project_cockpit_re_emits_timeline_task_archive_and_delete(qapp):
+    panel = ProjectCockpitPanel()
+    dashboard = _sample_dashboard()
+    panel.set_dashboard(dashboard)
+
+    archived: list[int] = []
+    deleted: list[int] = []
+    panel.archiveTaskRequested.connect(archived.append)
+    panel.deleteTaskRequested.connect(deleted.append)
+
+    panel.timeline_widget.select_item("task", 2)
+    panel._on_timeline_row_selected("task", 2)
+    panel.archive_timeline_task_btn.click()
+    panel.delete_timeline_task_btn.click()
+
+    assert archived == [2]
+    assert deleted == [2]
+
+
+def test_project_cockpit_project_actions_emit_current_project_id(qapp):
+    panel = ProjectCockpitPanel()
+    panel.set_dashboard(_sample_dashboard())
+
+    archived: list[int] = []
+    deleted: list[int] = []
+    panel.archiveTaskRequested.connect(archived.append)
+    panel.deleteTaskRequested.connect(deleted.append)
+
+    panel.archive_project_btn.click()
+    panel.delete_project_btn.click()
+
+    assert archived == [1]
+    assert deleted == [1]
 
 
 def test_project_cockpit_has_compact_default_size_hints(qapp):

@@ -3314,6 +3314,7 @@ class Database:
             SELECT pp.*, t.description AS project_name
             FROM project_profiles pp
             JOIN tasks t ON t.id = pp.task_id
+            WHERE t.archived_at IS NULL
             ORDER BY LOWER(t.description), t.id;
             """
         )
@@ -3338,7 +3339,8 @@ class Database:
                             CASE WHEN pp.task_id IS NOT NULL THEN 1 ELSE 0 END AS has_profile
             FROM tasks t
             LEFT JOIN project_profiles pp ON pp.task_id = t.id
-            WHERE (t.parent_id IS NULL OR pp.task_id IS NOT NULL)
+            WHERE t.archived_at IS NULL
+              AND (t.parent_id IS NULL OR pp.task_id IS NOT NULL)
             {folder_clause}
             ORDER BY LOWER(t.description), t.id;
             """,
@@ -4250,7 +4252,7 @@ class Database:
         ensure_profile: bool = True,
     ) -> dict | None:
         project_task = self.fetch_task_by_id(int(project_task_id))
-        if not project_task:
+        if not project_task or str(project_task.get("archived_at") or "").strip():
             return None
         if ensure_profile:
             profile = self.ensure_project_profile(int(project_task_id))
@@ -4259,7 +4261,12 @@ class Database:
             profile = self.fetch_project_profile(int(project_task_id))
             phases = self.fetch_project_phases(int(project_task_id)) if profile else []
         task_ids = set(self.fetch_project_task_ids(int(project_task_id)))
-        tasks = [row for row in self.fetch_tasks() if int(row["id"]) in task_ids]
+        tasks = [
+            row
+            for row in self.fetch_tasks()
+            if int(row["id"]) in task_ids
+            and not str(row.get("archived_at") or "").strip()
+        ]
         milestones = self.fetch_project_milestones(int(project_task_id))
         deliverables = self.fetch_project_deliverables(int(project_task_id))
         register_entries = self.fetch_project_register_entries(int(project_task_id))

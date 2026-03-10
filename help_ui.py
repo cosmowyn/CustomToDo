@@ -495,8 +495,9 @@ HELP_CHAPTERS: list[HelpChapter] = [
             <li><strong>Milestones use a dedicated diamond marker</strong>, while summary rows roll up child spans and dependencies draw as visible connectors across the chart.</li>
             <li><strong>The timeline includes Today, Selected, Fit project, and Fit selection controls</strong>, along with Day, Week, and Month zoom levels.</li>
             <li><strong>{_sc("Ctrl")}+mouse-wheel zooms the chart</strong> and supported trackpad pinch gestures use the same zoom state. The left/right arrow keys nudge the selected item by day. Use <code>Alt+Left/Right</code> to resize task starts and <code>Shift+Left/Right</code> to resize task ends.</li>
-            <li><strong>Right-click the chart for contextual planning actions</strong> such as adding tasks, child tasks, milestones, deliverables, dependency editing, row movement, and view navigation.</li>
+            <li><strong>Right-click the chart for contextual planning actions</strong> such as adding tasks, child tasks, milestones, deliverables, dependency editing, row movement, archive, permanent delete, and view navigation.</li>
             <li><strong>Timeline selection stays synchronized</strong> with the project cockpit tables, task tree, details panel, and relationship inspector.</li>
+            <li><strong>Task and project rows can be archived or permanently deleted from the cockpit</strong>, so items created from the planner can also be cleaned up there without returning to the main task tree.</li>
             <li><strong>Timeline rescheduling participates in undo/redo</strong>, including milestone and deliverable date moves.</li>
             <li><strong>Workload</strong> summarizes planned effort by day and week to highlight overcommitment for a single local user.</li>
             <li><strong>Health</strong> can be overridden manually, but the app also infers risk from overdue work, blockers, inactivity, and scope-related register entries.</li>

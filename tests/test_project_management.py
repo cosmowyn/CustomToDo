@@ -598,3 +598,27 @@ def test_subtree_template_inside_project_stays_plain_task_template(tmp_path, qap
     assert new_task is not None
     assert new_task["phase_id"] is None
     assert db.fetch_project_profile(int(new_root_id)) is None
+
+
+def test_archived_project_root_disappears_from_project_candidates(tmp_path):
+    db = Database(str(tmp_path / "pm_archive_root.sqlite3"))
+    today, project_id, task_one, _task_two = _seed_project(db)
+    db.save_project_profile(
+        project_id,
+        {
+            "objective": "Archive coverage",
+            "target_date": (today + timedelta(days=8)).isoformat(),
+        },
+    )
+    db.archive_task(project_id)
+
+    assert project_id not in {
+        int(row.get("id") or 0) for row in db.list_project_candidates()
+    }
+    assert project_id not in {
+        int(row.get("task_id") or 0) for row in db.list_project_profiles()
+    }
+    assert db.fetch_project_dashboard(project_id) is None
+    archived_child = db.fetch_task_by_id(task_one)
+    assert archived_child is not None
+    assert str(archived_child.get("archived_at") or "").strip()

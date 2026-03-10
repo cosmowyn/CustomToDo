@@ -532,6 +532,8 @@ class ProjectCockpitPanel(QWidget):
     editRegisterEntryRequested = Signal(int, dict)
     deleteRegisterEntryRequested = Signal(int)
     focusTaskRequested = Signal(int)
+    archiveTaskRequested = Signal(int)
+    deleteTaskRequested = Signal(int)
     timelineScheduleRequested = Signal(str, int, object, object)
     timelineDependencyEditRequested = Signal(str, int)
     editTaskDependenciesRequested = Signal(int, list)
@@ -587,6 +589,16 @@ class ProjectCockpitPanel(QWidget):
         self.project_combo = QComboBox()
         self.project_combo.setToolTip("Jump directly to a project context.")
         nav_layout.addRow("Project", self.project_combo)
+        self.archive_project_btn = QPushButton("Archive project")
+        self.archive_project_btn.setToolTip(
+            "Archive the currently selected project root task and its subtree."
+        )
+        nav_panel.header_actions.addWidget(self.archive_project_btn)
+        self.delete_project_btn = QPushButton("Delete permanently")
+        self.delete_project_btn.setToolTip(
+            "Permanently delete the currently selected project root task and its subtree."
+        )
+        nav_panel.header_actions.addWidget(self.delete_project_btn)
         nav_panel.body_layout.addLayout(nav_layout)
         root.addWidget(nav_panel)
 
@@ -628,8 +640,14 @@ class ProjectCockpitPanel(QWidget):
             self._open_category_context_menu
         )
         self.project_combo.currentIndexChanged.connect(self._emit_project_change)
+        self.project_combo.currentIndexChanged.connect(
+            self._update_project_action_buttons
+        )
         self.tabs.currentChanged.connect(self._on_current_tab_changed)
+        self.archive_project_btn.clicked.connect(self._archive_current_project)
+        self.delete_project_btn.clicked.connect(self._delete_current_project)
         polish_button_layouts(self)
+        self._update_project_action_buttons()
 
     def focus_target(self) -> QWidget | None:
         tab_name = str(self.tabs.tabText(self.tabs.currentIndex()) or "").strip().lower()
@@ -975,6 +993,22 @@ class ProjectCockpitPanel(QWidget):
         self.timeline_widget.taskMoveRelativeRequested.connect(
             self.timelineTaskMoveRelativeRequested.emit
         )
+        self.timeline_widget.archiveTaskRequested.connect(
+            self.archiveTaskRequested.emit
+        )
+        self.timeline_widget.deleteTaskRequested.connect(
+            self.deleteTaskRequested.emit
+        )
+        self.archive_timeline_task_btn = QPushButton("Archive selected")
+        self.archive_timeline_task_btn.setToolTip(
+            "Archive the selected task or project row from the timeline."
+        )
+        section.header_actions.addWidget(self.archive_timeline_task_btn)
+        self.delete_timeline_task_btn = QPushButton("Delete permanently")
+        self.delete_timeline_task_btn.setToolTip(
+            "Permanently delete the selected task or project row from the timeline."
+        )
+        section.header_actions.addWidget(self.delete_timeline_task_btn)
         self.timeline_stack = EmptyStateStack(
             self.timeline_widget,
             "No timeline rows to show.",
@@ -982,6 +1016,13 @@ class ProjectCockpitPanel(QWidget):
             "a project timeline.",
         )
         section.body_layout.addWidget(self.timeline_stack, 1)
+        self.archive_timeline_task_btn.clicked.connect(
+            self._archive_selected_timeline_task
+        )
+        self.delete_timeline_task_btn.clicked.connect(
+            self._delete_selected_timeline_task
+        )
+        self._update_timeline_action_buttons()
         self.tabs.addTab(page, "Timeline")
 
     def _timeline_tab_active(self) -> bool:
@@ -1036,6 +1077,7 @@ class ProjectCockpitPanel(QWidget):
     def _on_current_tab_changed(self, _index: int):
         if self._timeline_tab_active():
             self._apply_timeline_dashboard_if_needed()
+        self._update_timeline_action_buttons()
 
     def _build_capacity_tab(self):
         page = QWidget()
@@ -1326,6 +1368,8 @@ class ProjectCockpitPanel(QWidget):
             self._last_timeline_signature = None
             self._pending_timeline_dashboard = None
             self._loading_dashboard = False
+            self._update_project_action_buttons()
+            self._update_timeline_action_buttons()
             return
 
         project = dashboard.get("project") or {}
@@ -1445,6 +1489,8 @@ class ProjectCockpitPanel(QWidget):
         )
         self._populate_capacity(capacity)
         self._loading_dashboard = False
+        self._update_project_action_buttons()
+        self._update_timeline_action_buttons()
 
     def _populate_milestones_table(self, milestones: list[dict]):
         self.milestones_table.setRowCount(0)
@@ -1933,10 +1979,65 @@ class ProjectCockpitPanel(QWidget):
     def _on_timeline_row_selected(self, kind: str, item_id: int):
         self._sync_tables_from_timeline(kind, item_id)
         self._focus_related_from_timeline(kind, item_id)
+        self._update_timeline_action_buttons()
 
     def _on_timeline_row_activated(self, kind: str, item_id: int):
         self._sync_tables_from_timeline(kind, item_id)
         self._focus_related_from_timeline(kind, item_id)
+        self._update_timeline_action_buttons()
+
+    def _selected_timeline_task_id(self) -> int | None:
+        row = self.timeline_widget._selected_row()
+        if row is None:
+            return None
+        kind = str(row.get("kind") or "").strip().lower()
+        if kind not in {"task", "project"}:
+            return None
+        item_id = int(row.get("item_id") or 0)
+        return item_id if item_id > 0 else None
+
+    def _update_project_action_buttons(self):
+        current_project_id = self.project_combo.currentData()
+        if current_project_id is None:
+            current_project_id = self._current_project_id
+        enabled = current_project_id is not None and int(current_project_id) > 0
+        self.archive_project_btn.setEnabled(enabled)
+        self.delete_project_btn.setEnabled(enabled)
+
+    def _update_timeline_action_buttons(self):
+        enabled = self._selected_timeline_task_id() is not None
+        if hasattr(self, "archive_timeline_task_btn"):
+            self.archive_timeline_task_btn.setEnabled(enabled)
+        if hasattr(self, "delete_timeline_task_btn"):
+            self.delete_timeline_task_btn.setEnabled(enabled)
+
+    def _archive_current_project(self):
+        current_project_id = self.project_combo.currentData()
+        if current_project_id is None:
+            current_project_id = self._current_project_id
+        if current_project_id is None:
+            return
+        self.archiveTaskRequested.emit(int(current_project_id))
+
+    def _delete_current_project(self):
+        current_project_id = self.project_combo.currentData()
+        if current_project_id is None:
+            current_project_id = self._current_project_id
+        if current_project_id is None:
+            return
+        self.deleteTaskRequested.emit(int(current_project_id))
+
+    def _archive_selected_timeline_task(self):
+        task_id = self._selected_timeline_task_id()
+        if task_id is None:
+            return
+        self.archiveTaskRequested.emit(int(task_id))
+
+    def _delete_selected_timeline_task(self):
+        task_id = self._selected_timeline_task_id()
+        if task_id is None:
+            return
+        self.deleteTaskRequested.emit(int(task_id))
 
     def _select_row_by_id(self, table, item_id: int):
         target_id = int(item_id or 0)
@@ -1986,6 +2087,7 @@ class ProjectCockpitPanel(QWidget):
             return
         self._apply_timeline_dashboard_if_needed()
         self.timeline_widget.select_item("milestone", int(milestone_id), ensure_visible=True)
+        self._update_timeline_action_buttons()
 
     def _sync_timeline_from_deliverable_table(self):
         deliverable_id = self._selected_id_from_table(self.deliverables_table)
@@ -1997,6 +2099,7 @@ class ProjectCockpitPanel(QWidget):
             int(deliverable_id),
             ensure_visible=True,
         )
+        self._update_timeline_action_buttons()
 
     def _focus_related_from_timeline(self, kind: str, item_id: int):
         item_kind = str(kind or "").strip().lower()
@@ -2119,3 +2222,4 @@ class ProjectCockpitPanel(QWidget):
             None if task_id is None else int(task_id)
         )
         self.timeline_widget.set_active_task(task_id)
+        self._update_timeline_action_buttons()

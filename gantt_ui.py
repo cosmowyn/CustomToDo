@@ -280,6 +280,13 @@ class PlannerGraphicsView(QGraphicsView):
 
     def keyPressEvent(self, event):
         key = event.key()
+        if key in {Qt.Key.Key_Delete, Qt.Key.Key_Backspace}:
+            permanent = bool(
+                event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+            )
+            if self.owner.request_delete_selected(permanent=permanent):
+                event.accept()
+                return
         if key == Qt.Key.Key_Left:
             if event.modifiers() & Qt.KeyboardModifier.AltModifier:
                 self.owner.nudge_selection("resize_start", -1)
@@ -1071,6 +1078,8 @@ class ProjectGanttView(QWidget):
     deliverableCreateRequested = Signal(object)
     taskMoveRelativeRequested = Signal(int, int)
     taskMoveRequested = Signal(int, object, int)
+    archiveTaskRequested = Signal(int)
+    deleteTaskRequested = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2042,6 +2051,16 @@ class ProjectGanttView(QWidget):
     def _selected_row(self) -> dict | None:
         return self.row_lookup.get(self.selected_uid or "")
 
+    def _selected_task_row_id(self) -> int | None:
+        row = self._selected_row()
+        if row is None:
+            return None
+        kind = str(row.get("kind") or "").strip().lower()
+        if kind not in {"task", "project"}:
+            return None
+        item_id = int(row.get("item_id") or 0)
+        return item_id if item_id > 0 else None
+
     def _project_task_id(self) -> int | None:
         project = (self._dashboard or {}).get("project") or {}
         project_id = int(project.get("id") or 0)
@@ -2184,6 +2203,16 @@ class ProjectGanttView(QWidget):
         row_uid = str(row.get("uid") or "") if row else None
         self.create_task_at(row_uid, anchor_date, child_mode=False)
 
+    def request_delete_selected(self, *, permanent: bool) -> bool:
+        task_id = self._selected_task_row_id()
+        if task_id is None:
+            return False
+        if permanent:
+            self.deleteTaskRequested.emit(int(task_id))
+        else:
+            self.archiveTaskRequested.emit(int(task_id))
+        return True
+
     def _update_summary_label(self):
         row = self._selected_row()
         if row is None:
@@ -2245,6 +2274,27 @@ class ProjectGanttView(QWidget):
             focus_action = QAction("Focus item", menu)
             focus_action.triggered.connect(lambda: self.activate_row(row))
             menu.addAction(focus_action)
+
+        if row is not None and str(row.get("kind") or "").strip().lower() in {"task", "project"}:
+            menu.addSeparator()
+            item_kind = str(row.get("kind") or "").strip().lower()
+            archive_label = "Archive project" if item_kind == "project" else "Archive task"
+            archive_action = QAction(archive_label, menu)
+            archive_action.triggered.connect(
+                lambda: self.archiveTaskRequested.emit(int(row.get("item_id") or 0))
+            )
+            menu.addAction(archive_action)
+
+            delete_label = (
+                "Delete project permanently…"
+                if item_kind == "project"
+                else "Delete permanently…"
+            )
+            delete_action = QAction(delete_label, menu)
+            delete_action.triggered.connect(
+                lambda: self.deleteTaskRequested.emit(int(row.get("item_id") or 0))
+            )
+            menu.addAction(delete_action)
 
         jump_action = QAction("Jump to selected", menu)
         jump_action.triggered.connect(self.jump_to_selection)

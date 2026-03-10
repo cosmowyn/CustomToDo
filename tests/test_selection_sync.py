@@ -232,6 +232,91 @@ def test_project_timeline_can_create_task_directly_in_main_window(
         qapp.processEvents()
 
 
+def test_project_timeline_can_archive_created_task_from_cockpit(
+    tmp_path,
+    qapp,
+    monkeypatch,
+):
+    window = _build_window(tmp_path, qapp, monkeypatch)
+    try:
+        assert window.model.add_task_with_values("Project A")
+        project_id = int(window.model.last_added_task_id())
+        window.model.set_task_start_date(project_id, "2026-03-10")
+        window.model.set_task_due_date(project_id, "2026-03-20")
+
+        window.project_dock.show()
+        window._focus_task_by_id(project_id)
+        qapp.processEvents()
+
+        window.project_panel.timeline_widget.create_task_at(
+            None,
+            date(2026, 3, 16),
+        )
+        qapp.processEvents()
+
+        new_id = int(window.model.last_added_task_id())
+        window.project_panel.timeline_widget.select_item("task", new_id)
+        window.project_panel.timeline_widget.emit_chart_selection(f"task:{new_id}")
+        qapp.processEvents()
+
+        window.project_panel.archive_timeline_task_btn.click()
+        qapp.processEvents()
+
+        archived_task = window.db.fetch_task_by_id(new_id)
+        assert archived_task is not None
+        assert str(archived_task.get("archived_at") or "").strip()
+        assert all(
+            int(row.get("item_id") or 0) != new_id
+            for row in window.project_panel.timeline_widget.rows
+            if str(row.get("kind") or "") == "task"
+        )
+
+        window.model.undo_stack.undo()
+        qapp.processEvents()
+        restored_task = window.db.fetch_task_by_id(new_id)
+        assert restored_task is not None
+        assert not str(restored_task.get("archived_at") or "").strip()
+
+        window.model.undo_stack.redo()
+        qapp.processEvents()
+        rearchived_task = window.db.fetch_task_by_id(new_id)
+        assert rearchived_task is not None
+        assert str(rearchived_task.get("archived_at") or "").strip()
+    finally:
+        window.close()
+        qapp.processEvents()
+
+
+def test_archiving_project_root_from_cockpit_removes_project_context(
+    tmp_path,
+    qapp,
+    monkeypatch,
+):
+    window = _build_window(tmp_path, qapp, monkeypatch)
+    try:
+        assert window.model.add_task_with_values("Project A")
+        project_id = int(window.model.last_added_task_id())
+        window.model.set_task_start_date(project_id, "2026-03-10")
+        window.model.set_task_due_date(project_id, "2026-03-20")
+        assert window.model.add_task_with_values("Child A1", parent_id=project_id)
+
+        window.project_dock.show()
+        window._focus_task_by_id(project_id)
+        qapp.processEvents()
+
+        window.project_panel.archive_project_btn.click()
+        qapp.processEvents()
+
+        assert int(project_id) not in {
+            int(row.get("id") or 0) for row in window.model.list_project_candidates()
+        }
+        assert window.model.fetch_project_dashboard(project_id) is None
+        assert window.project_panel.project_combo.findData(project_id) == -1
+    finally:
+        window.close()
+        qapp.processEvents()
+
+
 def test_details_auto_save_on_selection_change_preserves_new_focus(
     tmp_path,
     qapp,
