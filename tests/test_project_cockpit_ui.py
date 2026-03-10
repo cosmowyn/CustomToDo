@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from unittest.mock import patch
 
-from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtCore import QPoint, QPointF, QSettings, Qt
 from PySide6.QtGui import QFontMetrics, QNativeGestureEvent, QPointingDevice, QWheelEvent
 
 from gantt_ui import (
@@ -17,6 +17,7 @@ from gantt_ui import (
 from platform_utils import is_macos
 from project_cockpit_ui import ProjectCockpitPanel
 from project_management import build_timeline_rows
+from theme import ThemeManager
 
 
 def _sample_dashboard() -> dict:
@@ -166,6 +167,73 @@ def test_gantt_view_builds_hierarchy_and_dependencies(qapp):
     assert widget.range_start is not None
     assert widget.range_end is not None
     assert widget.range_start <= date.today() <= widget.range_end
+
+
+def test_gantt_view_distinguishes_summary_bars_from_normal_tasks(qapp):
+    widget = ProjectGanttView()
+    widget.resize(1100, 480)
+    widget.set_dashboard(_sample_dashboard())
+    widget.show()
+    qapp.processEvents()
+
+    summary_row = widget.row_lookup["project:1"]
+    task_row = widget.row_lookup["task:4"]
+    summary_item = widget.bar_items["project:1"]
+    task_item = widget.bar_items["task:4"]
+
+    assert str(summary_row.get("render_style")) == "summary"
+    assert str(task_row.get("render_style")) == "task"
+    assert widget.bar_color_for_row(summary_row) != widget.bar_color_for_row(task_row)
+    assert summary_item.base_rect().height() > task_item.base_rect().height()
+    assert summary_item._use_external_text_label() is False
+
+
+def test_gantt_summary_bar_uses_external_label_when_text_no_longer_fits(qapp):
+    widget = ProjectGanttView()
+    widget.resize(820, 420)
+    widget.set_dashboard(_sample_dashboard())
+    widget._set_zoom_pixels_per_day(MIN_PIXELS_PER_DAY, mode="custom")
+    widget.show()
+    qapp.processEvents()
+
+    summary_item = widget.bar_items["task:2"]
+    assert summary_item._use_external_text_label() is True
+    assert summary_item.boundingRect().width() > summary_item.base_rect().width()
+
+
+def test_gantt_view_uses_persisted_theme_colors_for_task_and_summary_bars(qapp):
+    widget = ProjectGanttView()
+    widget.resize(1100, 480)
+    widget.set_dashboard(_sample_dashboard())
+    widget.show()
+    qapp.processEvents()
+
+    original_task_color = widget.bar_color_for_row(widget.row_lookup["task:3"]).name().lower()
+    original_summary_color = widget.bar_color_for_row(widget.row_lookup["task:2"]).name().lower()
+
+    settings = QSettings()
+    tm = ThemeManager(settings)
+    theme_name = tm.current_theme_name()
+    theme = tm.load_theme(theme_name)
+    theme["colors"]["gantt_task_bg"] = "#1122CC"
+    theme["colors"]["gantt_task_text"] = "#F8F9FA"
+    theme["colors"]["gantt_summary_bg"] = "#101820"
+    theme["colors"]["gantt_summary_text"] = "#F4EBD0"
+    tm.save_theme(theme_name, theme)
+    tm.apply_to_app(qapp)
+
+    widget.reload_theme_colors()
+    qapp.processEvents()
+
+    summary_row = widget.row_lookup["task:2"]
+    task_row = widget.row_lookup["task:3"]
+
+    assert original_task_color != "#1122cc"
+    assert original_summary_color != "#101820"
+    assert widget.bar_color_for_row(task_row).name().lower() == "#1122cc"
+    assert widget.bar_text_color_for_row(task_row).name().lower() == "#f8f9fa"
+    assert widget.bar_color_for_row(summary_row).name().lower() == "#101820"
+    assert widget.bar_text_color_for_row(summary_row).name().lower() == "#f4ebd0"
 
 
 def test_gantt_view_milestone_bounds_include_label_and_toolbar_controls_fit_text(qapp):

@@ -130,6 +130,7 @@ class SettingsDialog(QDialog):
         self._build_tree_group()
         self._build_buttons_group()
         self._build_inputs_group()
+        self._build_gantt_group()
         self._build_clock_group()
         self._build_selection_group()
         self._build_border_groups()
@@ -487,6 +488,28 @@ class SettingsDialog(QDialog):
         g.layout().addRow("Selected value text", self.clock_accent_text_btn)
         g.layout().addRow("Center dot", self.clock_center_dot_btn)
 
+    def _build_gantt_group(self):
+        g = self._mk_group(
+            "Gantt bar colors",
+            column="right",
+            subtitle="Colors for ordinary task bars and parent/summary bars in the timeline.",
+        )
+
+        self.gantt_task_bg_btn = QPushButton()
+        self.gantt_task_text_btn = QPushButton()
+        self.gantt_summary_bg_btn = QPushButton()
+        self.gantt_summary_text_btn = QPushButton()
+
+        self.gantt_task_bg_btn.clicked.connect(lambda: self._color_pick("gantt_task_bg", self.gantt_task_bg_btn))
+        self.gantt_task_text_btn.clicked.connect(lambda: self._color_pick("gantt_task_text", self.gantt_task_text_btn))
+        self.gantt_summary_bg_btn.clicked.connect(lambda: self._color_pick("gantt_summary_bg", self.gantt_summary_bg_btn))
+        self.gantt_summary_text_btn.clicked.connect(lambda: self._color_pick("gantt_summary_text", self.gantt_summary_text_btn))
+
+        g.layout().addRow("Task bar background", self.gantt_task_bg_btn)
+        g.layout().addRow("Task bar text", self.gantt_task_text_btn)
+        g.layout().addRow("Summary bar background", self.gantt_summary_bg_btn)
+        g.layout().addRow("Summary bar text", self.gantt_summary_text_btn)
+
     def _build_selection_group(self):
         g = self._mk_group(
             "Selection colors",
@@ -713,6 +736,11 @@ class SettingsDialog(QDialog):
         _set_color_btn(self.input_fg_btn, c["input_fg"])
         _set_color_btn(self.input_border_btn, c["input_border"])
         _set_color_btn(self.input_focus_border_btn, c["input_focus_border"])
+
+        _set_color_btn(self.gantt_task_bg_btn, c["gantt_task_bg"])
+        _set_color_btn(self.gantt_task_text_btn, c["gantt_task_text"])
+        _set_color_btn(self.gantt_summary_bg_btn, c["gantt_summary_bg"])
+        _set_color_btn(self.gantt_summary_text_btn, c["gantt_summary_text"])
 
         _set_color_btn(self.clock_face_bg_btn, c["clock_face_bg"])
         _set_color_btn(self.clock_face_border_btn, c["clock_face_border"])

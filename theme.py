@@ -196,6 +196,11 @@ def _system_palette_colors() -> dict:
         "row_del_hover_bg": "#FADADA",
         "row_del_pressed_bg": "#F6C4C4",
 
+        "gantt_task_bg": "#2563EB",
+        "gantt_task_text": _ensure_contrast("#2563EB", "#F9FAFB"),
+        "gantt_summary_bg": "#1F2937",
+        "gantt_summary_text": _ensure_contrast("#1F2937", "#F9FAFB"),
+
         "clock_face_bg": base_bg,
         "clock_face_border": mid_hex,
         "clock_text": text_fg,
@@ -533,14 +538,16 @@ class ThemeManager:
 
     def apply_to_app(self, app) -> QIcon | None:
         theme = self.load_theme(self.current_theme_name())
+        colors = dict(theme.get("colors", {})) if isinstance(theme.get("colors"), dict) else {}
 
         base_font = _font_from_str(theme["fonts"].get("base", ""), QFont())
         app.setFont(base_font)
 
         app.setStyleSheet(self._build_stylesheet(theme))
+        app.setProperty("gridoryn_theme_colors", colors)
 
         try:
-            c = theme["colors"]
+            c = colors
             pal = QPalette(app.palette())
             pal.setColor(QPalette.ColorRole.PlaceholderText, QColor(c.get("search_placeholder_fg", "#666666")))
             app.setPalette(pal)

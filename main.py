@@ -5568,6 +5568,8 @@ class MainWindow(QMainWindow):
                 self._tray_icon.setIcon(tray_icon)
                 if not self._tray_icon.isVisible():
                     self._tray_icon.show()
+        if hasattr(self, "project_panel") and hasattr(self.project_panel, "timeline_widget"):
+            self.project_panel.timeline_widget.reload_theme_colors()
         self.model.refresh_due_highlights()
 
     def _open_settings(self):

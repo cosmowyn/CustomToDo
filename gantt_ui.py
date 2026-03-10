@@ -10,6 +10,7 @@ from PySide6.QtCore import (
     QPointF,
     QRect,
     QRectF,
+    QSettings,
     QSize,
     Qt,
     QTimer,
@@ -50,6 +51,7 @@ from PySide6.QtWidgets import (
 
 from platform_utils import is_macos
 from project_management import parse_iso_date, today_local
+from theme import ThemeManager
 from ui_layout import add_left_aligned_buttons, configure_box_layout
 from ui_perf import measure_ui
 
@@ -82,6 +84,40 @@ def _ensure_date(value: str | None) -> date | None:
 
 def _best_contrast(bg: QColor) -> QColor:
     return QColor("#111827") if bg.lightness() > 135 else QColor("#F9FAFB")
+
+
+def _active_theme_colors() -> dict:
+    app = QApplication.instance()
+    if app is not None:
+        colors = app.property("gridoryn_theme_colors")
+        if isinstance(colors, dict):
+            return dict(colors)
+    try:
+        tm = ThemeManager(QSettings())
+        theme = tm.load_theme(tm.current_theme_name())
+        colors = theme.get("colors", {})
+        return colors if isinstance(colors, dict) else {}
+    except Exception:
+        return {}
+
+
+def _theme_color(colors: dict, key: str, fallback: str) -> QColor:
+    color = QColor(str(colors.get(key) or fallback))
+    if not color.isValid():
+        color = QColor(fallback)
+    return color
+
+
+def _health_accent_for_status(status: str) -> QColor:
+    palette = {
+        "on_track": QColor("#16A34A"),
+        "at_risk": QColor("#F59E0B"),
+        "delayed": QColor("#DC2626"),
+        "blocked": QColor("#B91C1C"),
+        "awaiting_external_input": QColor("#D97706"),
+        "scope_drifting": QColor("#7C3AED"),
+    }
+    return palette.get(str(status or "").strip().lower(), QColor("#64748B"))
 
 
 def _fit_button_to_text(button: QPushButton, *, extra_padding: int = 28):
@@ -719,15 +755,17 @@ class TimelineBarItem(QGraphicsItem):
 
     def _use_external_text_label(self) -> bool:
         style = str(self.row.get("render_style") or "")
-        if style not in {"task", "deliverable"}:
+        if style not in {"task", "deliverable", "summary"}:
             return False
         rect = self.base_rect()
         text = str(self.row.get("label") or "")
-        internal_width = rect.width() - (BAR_TEXT_PADDING_X * 2.0)
+        padding_x = 10.0 if style == "summary" else BAR_TEXT_PADDING_X
+        internal_width = rect.width() - (padding_x * 2.0)
         metrics = self._label_font_metrics()
         if metrics.horizontalAdvance(text) > max(0.0, internal_width):
             return True
-        return internal_width < 36.0
+        threshold = 54.0 if style == "summary" else 36.0
+        return internal_width < threshold
 
     def _external_label_rect(self) -> QRectF:
         rect = self.base_rect()
@@ -748,6 +786,47 @@ class TimelineBarItem(QGraphicsItem):
             width,
             height,
         )
+
+    def _label_font(self) -> QFont:
+        font = QFont(QApplication.font())
+        if str(self.row.get("render_style") or "") == "summary":
+            font.setWeight(QFont.Weight.DemiBold)
+        return font
+
+    def _draw_external_label_chip(
+        self,
+        painter: QPainter,
+        label_rect: QRectF,
+        *,
+        fill: QColor,
+        text_color: QColor,
+        border: QColor,
+        neutral: bool = False,
+    ):
+        painter.setPen(Qt.PenStyle.NoPen)
+        if neutral:
+            painter.setBrush(QColor(self.owner.palette().base().color().rgba()))
+        else:
+            painter.setBrush(fill)
+            painter.setPen(QPen(border, 1.2))
+        painter.drawRoundedRect(label_rect, 5, 5)
+        painter.setPen(self.owner.palette().text().color() if neutral else text_color)
+        painter.save()
+        label_font, _label_metrics, label_text = _text_layout(
+            self._label_font(),
+            str(self.row.get("label") or ""),
+            label_rect.width(),
+            label_rect.height(),
+            padding_x=BAR_TEXT_PADDING_X,
+            padding_y=BAR_TEXT_PADDING_Y,
+        )
+        painter.setFont(label_font)
+        painter.drawText(
+            label_rect.adjusted(BAR_TEXT_PADDING_X, 0, -BAR_TEXT_PADDING_X, 0),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            label_text,
+        )
+        painter.restore()
 
     def boundingRect(self) -> QRectF:
         rect = self.base_rect()
@@ -859,14 +938,13 @@ class TimelineBarItem(QGraphicsItem):
         row = self.row
         color = self.owner.bar_color_for_row(row)
         border = self.owner.bar_border_for_row(row)
-        text_color = _best_contrast(color)
+        text_color = self.owner.bar_text_color_for_row(row)
         style = str(row.get("render_style") or "task")
         is_selected = self.owner.selected_uid == self.uid
-        metrics = self._label_font_metrics()
-        base_font = QApplication.font()
+        base_font = self._label_font()
 
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.setPen(QPen(border, 1.4 if not is_selected else 2.2))
+        painter.setPen(QPen(border, 1.6 if style == "summary" and not is_selected else 1.4 if not is_selected else 2.2))
         painter.setBrush(color)
 
         if style == "milestone":
@@ -883,55 +961,26 @@ class TimelineBarItem(QGraphicsItem):
             painter.drawPolygon(diamond)
             label_rect = self._milestone_label_rect()
             if not label_rect.isEmpty():
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor(self.owner.palette().base().color().rgba()))
-                painter.drawRoundedRect(label_rect, 5, 5)
-                painter.setPen(self.owner.palette().text().color())
-                painter.save()
-                label_font, _label_metrics, label_text = _text_layout(
-                    base_font,
-                    str(row.get("label") or ""),
-                    label_rect.width(),
-                    label_rect.height(),
-                    padding_x=BAR_TEXT_PADDING_X,
-                    padding_y=BAR_TEXT_PADDING_Y,
+                self._draw_external_label_chip(
+                    painter,
+                    label_rect,
+                    fill=color,
+                    text_color=text_color,
+                    border=border,
+                    neutral=True,
                 )
-                painter.setFont(label_font)
-                painter.drawText(
-                    label_rect.adjusted(BAR_TEXT_PADDING_X, 0, -BAR_TEXT_PADDING_X, 0),
-                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                    label_text,
-                )
-                painter.restore()
         elif style == "deliverable":
             painter.drawRoundedRect(rect, 6, 6)
             if self._use_external_text_label():
                 label_rect = self._external_label_rect()
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor(self.owner.palette().base().color().rgba()))
-                painter.drawRoundedRect(label_rect, 5, 5)
-                painter.setPen(self.owner.palette().text().color())
-                painter.save()
-                label_font, _label_metrics, label_text = _text_layout(
-                    base_font,
-                    str(row.get("label") or ""),
-                    label_rect.width(),
-                    label_rect.height(),
-                    padding_x=BAR_TEXT_PADDING_X,
-                    padding_y=BAR_TEXT_PADDING_Y,
+                self._draw_external_label_chip(
+                    painter,
+                    label_rect,
+                    fill=color,
+                    text_color=text_color,
+                    border=border,
+                    neutral=True,
                 )
-                painter.setFont(label_font)
-                painter.drawText(
-                    label_rect.adjusted(
-                        BAR_TEXT_PADDING_X,
-                        0,
-                        -BAR_TEXT_PADDING_X,
-                        0,
-                    ),
-                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                    label_text,
-                )
-                painter.restore()
             else:
                 painter.setPen(text_color)
                 painter.save()
@@ -965,23 +1014,38 @@ class TimelineBarItem(QGraphicsItem):
             path.lineTo(rect.left() + 10, rect.bottom())
             path.closeSubpath()
             painter.drawPath(path)
-            painter.setPen(text_color)
-            painter.save()
-            label_font, _label_metrics, label_text = _text_layout(
-                base_font,
-                str(row.get("label") or ""),
-                rect.width(),
-                rect.height(),
-                padding_x=10.0,
-                padding_y=BAR_TEXT_PADDING_Y,
-            )
-            painter.setFont(label_font)
-            painter.drawText(
-                rect.adjusted(10, 0, -10, 0),
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                label_text,
-            )
-            painter.restore()
+            accent = self.owner.summary_accent_for_row(row)
+            if accent is not None and accent.isValid():
+                accent_rect = rect.adjusted(4.0, 3.0, -4.0, -rect.height() + 7.0)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(accent)
+                painter.drawRoundedRect(accent_rect, 2.5, 2.5)
+            if self._use_external_text_label():
+                self._draw_external_label_chip(
+                    painter,
+                    self._external_label_rect(),
+                    fill=color.lighter(108),
+                    text_color=text_color,
+                    border=border,
+                )
+            else:
+                painter.setPen(text_color)
+                painter.save()
+                label_font, _label_metrics, label_text = _text_layout(
+                    base_font,
+                    str(row.get("label") or ""),
+                    rect.width(),
+                    rect.height(),
+                    padding_x=10.0,
+                    padding_y=BAR_TEXT_PADDING_Y,
+                )
+                painter.setFont(label_font)
+                painter.drawText(
+                    rect.adjusted(10, 0, -10, 0),
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                    label_text,
+                )
+                painter.restore()
         else:
             painter.drawRoundedRect(rect, 5, 5)
             progress = max(0, min(100, int(row.get("progress_percent") or 0)))
@@ -995,31 +1059,14 @@ class TimelineBarItem(QGraphicsItem):
                 painter.setBrush(color)
             if self._use_external_text_label():
                 label_rect = self._external_label_rect()
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor(self.owner.palette().base().color().rgba()))
-                painter.drawRoundedRect(label_rect, 5, 5)
-                painter.setPen(self.owner.palette().text().color())
-                painter.save()
-                label_font, _label_metrics, label_text = _text_layout(
-                    base_font,
-                    str(row.get("label") or ""),
-                    label_rect.width(),
-                    label_rect.height(),
-                    padding_x=BAR_TEXT_PADDING_X,
-                    padding_y=BAR_TEXT_PADDING_Y,
+                self._draw_external_label_chip(
+                    painter,
+                    label_rect,
+                    fill=color,
+                    text_color=text_color,
+                    border=border,
+                    neutral=True,
                 )
-                painter.setFont(label_font)
-                painter.drawText(
-                    label_rect.adjusted(
-                        BAR_TEXT_PADDING_X,
-                        0,
-                        -BAR_TEXT_PADDING_X,
-                        0,
-                    ),
-                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                    label_text,
-                )
-                painter.restore()
             else:
                 painter.setPen(text_color)
                 painter.save()
@@ -1106,6 +1153,7 @@ class ProjectGanttView(QWidget):
         self._scroll_repaint_timer = QTimer(self)
         self._scroll_repaint_timer.setSingleShot(True)
         self._scroll_repaint_timer.timeout.connect(self._flush_scroll_repaint)
+        self._theme_colors = _active_theme_colors()
 
         root = QVBoxLayout(self)
         configure_box_layout(root, margins=(0, 0, 0, 0), spacing=6)
@@ -1264,41 +1312,87 @@ class ProjectGanttView(QWidget):
     def minimumSizeHint(self) -> QSize:
         return QSize(680, 320)
 
-    def bar_color_for_row(self, row: dict) -> QColor:
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() in {
+            QEvent.Type.ApplicationPaletteChange,
+            QEvent.Type.PaletteChange,
+            QEvent.Type.StyleChange,
+        }:
+            self.reload_theme_colors()
+
+    def reload_theme_colors(self):
+        self._theme_colors = _active_theme_colors()
+        if not hasattr(self, "view"):
+            return
+        self._invalidate_scene_layers()
+        self.header.update()
+        self.update()
+
+    def bar_text_color_for_row(self, row: dict) -> QColor:
+        return self._bar_style_for_row(row)["text"]
+
+    def summary_accent_for_row(self, row: dict) -> QColor | None:
+        style = str(row.get("render_style") or "")
+        if style != "summary":
+            return None
+        if str(row.get("kind") or "") != "project":
+            return None
+        return _health_accent_for_status(str(row.get("status") or ""))
+
+    def _bar_style_for_row(self, row: dict) -> dict[str, QColor]:
+        colors = self._theme_colors or {}
         style = str(row.get("render_style") or "task")
         status = str(row.get("status") or "").strip().lower()
         blocked = bool(row.get("blocked"))
-        display_end = _ensure_date(str(row.get("display_end_date") or row.get("end_date") or None))
-        is_overdue = bool(display_end is not None and display_end < today_local() and status not in {"completed", "done"})
+        display_end = _ensure_date(
+            str(row.get("display_end_date") or row.get("end_date") or None)
+        )
+        is_overdue = bool(
+            display_end is not None
+            and display_end < today_local()
+            and status not in {"completed", "done"}
+        )
         if style == "summary":
-            kind = str(row.get("kind") or "")
-            if kind == "project":
-                health = str(row.get("status") or "").strip().lower()
-                palette = {
-                    "on_track": QColor("#16A34A"),
-                    "at_risk": QColor("#F59E0B"),
-                    "delayed": QColor("#DC2626"),
-                    "blocked": QColor("#B91C1C"),
-                    "awaiting_external_input": QColor("#D97706"),
-                    "scope_drifting": QColor("#7C3AED"),
-                }
-                return palette.get(health, QColor("#2563EB"))
-            return QColor("#4B5563")
+            fill = _theme_color(colors, "gantt_summary_bg", "#1F2937")
+            text = _theme_color(
+                colors,
+                "gantt_summary_text",
+                _best_contrast(fill).name(),
+            )
+            return {
+                "fill": fill,
+                "text": text,
+                "border": fill.lighter(130) if fill.lightness() < 110 else fill.darker(135),
+            }
         if blocked:
-            return QColor("#DC2626")
-        if status in {"completed", "done", "on_track"}:
-            return QColor("#16A34A")
-        if is_overdue:
-            return QColor("#F97316")
-        if style == "milestone":
-            return QColor("#7C3AED")
-        if style == "deliverable":
-            return QColor("#0F766E")
-        return QColor("#2563EB")
+            fill = QColor("#DC2626")
+        elif status in {"completed", "done", "on_track"}:
+            fill = QColor("#16A34A")
+        elif is_overdue:
+            fill = QColor("#F97316")
+        elif style == "milestone":
+            fill = QColor("#7C3AED")
+        elif style == "deliverable":
+            fill = QColor("#0F766E")
+        else:
+            fill = _theme_color(colors, "gantt_task_bg", "#2563EB")
+        text = (
+            _theme_color(colors, "gantt_task_text", _best_contrast(fill).name())
+            if style == "task"
+            else _best_contrast(fill)
+        )
+        return {
+            "fill": fill,
+            "text": text,
+            "border": fill.darker(130),
+        }
+
+    def bar_color_for_row(self, row: dict) -> QColor:
+        return self._bar_style_for_row(row)["fill"]
 
     def bar_border_for_row(self, row: dict) -> QColor:
-        color = self.bar_color_for_row(row)
-        return color.darker(130)
+        return self._bar_style_for_row(row)["border"]
 
     def row_is_editable(self, row: dict) -> bool:
         return bool(row.get("editable_move") or row.get("editable_start") or row.get("editable_end"))
@@ -1523,7 +1617,7 @@ class ProjectGanttView(QWidget):
             top = y + ((ROW_HEIGHT - diamond_size) / 2.0)
             return QRectF(start_x - (diamond_size / 2.0), top, diamond_size, diamond_size)
         if style == "summary":
-            bar_height = min(float(ROW_HEIGHT - 8), max(16.0, text_height))
+            bar_height = min(float(ROW_HEIGHT - 4), max(18.0, text_height + 2.0))
             top = y + ((ROW_HEIGHT - bar_height) / 2.0)
             return QRectF(start_x, top, width, bar_height)
         if style == "deliverable":
