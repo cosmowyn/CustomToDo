@@ -1639,15 +1639,7 @@ class TaskTreeModel(QAbstractItemModel):
         return int(cmd.root_task_id) if cmd.root_task_id is not None else None
 
     def save_template_from_task(self, name: str, task_id: int):
-        subtree = self.snapshot_subtree(int(task_id))
-        payload = {"tasks": []}
-        for t in subtree:
-            tid = int(t["id"])
-            item = dict(t)
-            item["custom"] = {str(k): v for k, v in (t.get("custom") or {}).items()}
-            item["attachments"] = self.db.fetch_attachments(tid)
-            item["dependencies"] = [int(d["id"]) for d in self.db.fetch_dependencies(tid)]
-            payload["tasks"].append(item)
+        payload = self._build_template_payload_from_task(int(task_id))
         self.db.save_template(str(name or "").strip(), payload, overwrite=True)
 
     def list_templates(self) -> list[dict]:
@@ -1720,6 +1712,22 @@ class TaskTreeModel(QAbstractItemModel):
             self.db.restore_task_snapshot(t)
         self.reload_all(reset_header_state=False)
 
+    def _db_restore_template_payload(self, payload: dict):
+        tasks = payload.get("tasks") if isinstance(payload, dict) else None
+        if not isinstance(tasks, list) or not tasks:
+            return
+        task_id_map: dict[int, int] = {}
+        for t in tasks:
+            old_id = t.get("id")
+            if old_id is None:
+                continue
+            self.db.insert_task(t, keep_id=True)
+            task_id_map[int(old_id)] = int(old_id)
+        for t in tasks:
+            self.db.restore_task_snapshot(t)
+        self.db.restore_project_template_payload(payload, task_id_map)
+        self.reload_all(reset_header_state=False)
+
     def capture_task_snapshot(self, task_id: int) -> dict | None:
         return self.db.fetch_task_snapshot(int(task_id))
 
@@ -1789,6 +1797,30 @@ class TaskTreeModel(QAbstractItemModel):
                 out.append(int(child_id))
         return out
 
+    def _build_template_payload_from_task(self, task_id: int) -> dict:
+        root_id = int(task_id)
+        subtree = self.snapshot_subtree(root_id)
+        payload = {"tasks": []}
+        subtree_ids = {int(t["id"]) for t in subtree if t and t.get("id") is not None}
+        include_project_template = self.db.fetch_project_profile(root_id) is not None
+        project_template = (
+            self.db.build_project_template_payload(root_id, task_ids=subtree_ids)
+            if include_project_template
+            else None
+        )
+
+        for t in subtree:
+            tid = int(t["id"])
+            item = dict(t)
+            item["custom"] = {str(k): v for k, v in (t.get("custom") or {}).items()}
+            item["attachments"] = self.db.fetch_attachments(tid)
+            item["dependencies"] = [int(d["id"]) for d in self.db.fetch_dependencies(tid)]
+            item["phase_id"] = None
+            payload["tasks"].append(item)
+        if isinstance(project_template, dict):
+            payload["project_template"] = project_template
+        return payload
+
     def _create_tasks_from_template_payload_now(self, payload: dict, parent_id: int | None = None) -> int | None:
         if not payload:
             return None
@@ -1808,6 +1840,7 @@ class TaskTreeModel(QAbstractItemModel):
             new_task.pop("created_at", None)
             new_task["last_update"] = self._now_iso()
             new_task["is_collapsed"] = 0
+            new_task["phase_id"] = None
             new_task["recurrence_rule_id"] = None
             new_task["recurrence_origin_task_id"] = None
             new_task["is_generated_occurrence"] = 0
@@ -1850,6 +1883,8 @@ class TaskTreeModel(QAbstractItemModel):
             mapped = [int(x) for x in deps if x]
             if mapped:
                 self.db.set_task_dependencies(new_id, mapped)
+
+        self.db.restore_project_template_payload(payload, old_to_new)
 
         self.reload_all(reset_header_state=False)
         return first_new

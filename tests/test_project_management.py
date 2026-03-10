@@ -8,6 +8,7 @@ from PySide6.QtCore import Qt
 from db import Database, now_iso
 from model import TaskTreeModel
 from project_management import compute_baseline_variance, compute_personal_capacity
+from template_params import apply_template_values, collect_template_placeholders
 
 
 def _seed_project(db: Database):
@@ -438,3 +439,162 @@ def test_timeline_reschedule_for_milestone_and_deliverable_is_undoable(tmp_path,
     model.undo_stack.redo()
     redone_deliverable = db.fetch_deliverable_by_id(deliverable_id)
     assert redone_deliverable["due_date"] == (today + timedelta(days=7)).isoformat()
+
+
+def test_project_root_template_roundtrip_preserves_project_state(tmp_path, qapp):
+    db = Database(str(tmp_path / "pm_template.sqlite3"))
+    today, project_id, task_one, task_two = _seed_project(db)
+
+    db.save_project_profile(
+        project_id,
+        {
+            "objective": "Launch {project_name}",
+            "scope": "Specification and release package.",
+            "out_of_scope": "Post-launch work.",
+            "owner": "{owner}",
+            "stakeholders": "Operations",
+            "target_date": (today + timedelta(days=8)).isoformat(),
+            "success_criteria": "Release ships successfully.",
+            "project_status_health": "at_risk",
+            "summary": "Template coverage",
+            "category": "Product",
+        },
+    )
+    phases = db.fetch_project_phases(project_id)
+    planning_phase = next(row for row in phases if row["name"] == "Planning")
+    execution_phase = next(row for row in phases if row["name"] == "Execution")
+    db.set_task_phase(task_one, int(planning_phase["id"]))
+    db.set_task_phase(task_two, int(execution_phase["id"]))
+    db.set_task_dependencies(task_two, [task_one])
+
+    milestone_id = db.upsert_milestone(
+        {
+            "project_task_id": project_id,
+            "title": "Specification approved",
+            "description": "Approval gate",
+            "phase_id": int(planning_phase["id"]),
+            "linked_task_id": task_one,
+            "start_date": today.isoformat(),
+            "target_date": (today + timedelta(days=2)).isoformat(),
+            "baseline_target_date": (today + timedelta(days=1)).isoformat(),
+            "status": "in_progress",
+            "progress_percent": 50,
+            "dependencies": [{"kind": "task", "id": task_one}],
+        }
+    )
+    db.upsert_deliverable(
+        {
+            "project_task_id": project_id,
+            "title": "Release package",
+            "description": "Final bundle",
+            "phase_id": int(execution_phase["id"]),
+            "linked_task_id": task_two,
+            "linked_milestone_id": milestone_id,
+            "due_date": (today + timedelta(days=6)).isoformat(),
+            "baseline_due_date": (today + timedelta(days=5)).isoformat(),
+            "acceptance_criteria": "Bundle verified",
+            "version_ref": "v2.0.0",
+            "status": "planned",
+        }
+    )
+    db.upsert_project_register_entry(
+        {
+            "project_task_id": project_id,
+            "entry_type": "risk",
+            "title": "Approval delay",
+            "details": "Approval may slip.",
+            "status": "open",
+            "severity": 4,
+            "review_date": (today + timedelta(days=1)).isoformat(),
+            "linked_task_id": task_two,
+            "linked_milestone_id": milestone_id,
+        }
+    )
+    db.save_project_baseline(project_id, (today + timedelta(days=7)).isoformat(), 360)
+
+    model = TaskTreeModel(db)
+    model.save_template_from_task("Project Template", project_id)
+    payload = model.load_template_payload("Project Template")
+    assert payload is not None
+    assert "project_template" in payload
+    assert all(task.get("phase_id") is None for task in payload["tasks"])
+
+    placeholders = collect_template_placeholders(payload)
+    assert {"project_name", "owner"} <= set(placeholders)
+
+    resolved_payload = apply_template_values(
+        payload,
+        {"project_name": "Gridoryn Release", "owner": "Alice"},
+    )
+    new_root_id = model.create_tasks_from_template_payload(resolved_payload)
+    assert new_root_id is not None
+
+    new_dashboard = db.fetch_project_dashboard(int(new_root_id))
+    assert new_dashboard is not None
+    assert new_dashboard["profile"]["objective"] == "Launch Gridoryn Release"
+    assert new_dashboard["profile"]["owner"] == "Alice"
+    assert new_dashboard["baseline"]["effort_minutes"] == 360
+
+    new_tasks = {
+        str(row["description"]): row
+        for row in new_dashboard["tasks"]
+    }
+    assert {"Draft specification", "Publish release"} <= set(new_tasks)
+    assert new_tasks["Draft specification"]["phase_id"] is not None
+    assert new_tasks["Publish release"]["phase_id"] is not None
+    publish_deps = db.fetch_dependencies(int(new_tasks["Publish release"]["id"]))
+    assert [int(row["id"]) for row in publish_deps] == [int(new_tasks["Draft specification"]["id"])]
+
+    new_milestones = db.fetch_project_milestones(int(new_root_id))
+    assert len(new_milestones) == 1
+    new_milestone = new_milestones[0]
+    assert int(new_milestone["linked_task_id"]) == int(new_tasks["Draft specification"]["id"])
+    assert len(new_milestone["dependencies"]) == 1
+    assert int(new_milestone["dependencies"][0]["id"]) == int(new_tasks["Draft specification"]["id"])
+
+    new_deliverables = db.fetch_project_deliverables(int(new_root_id))
+    assert len(new_deliverables) == 1
+    assert int(new_deliverables[0]["linked_task_id"]) == int(new_tasks["Publish release"]["id"])
+    assert int(new_deliverables[0]["linked_milestone_id"]) == int(new_milestone["id"])
+
+    new_register_entries = db.fetch_project_register_entries(int(new_root_id))
+    assert len(new_register_entries) == 1
+    assert int(new_register_entries[0]["linked_task_id"]) == int(new_tasks["Publish release"]["id"])
+    assert int(new_register_entries[0]["linked_milestone_id"]) == int(new_milestone["id"])
+
+    model.undo_stack.undo()
+    assert db.fetch_task_by_id(int(new_root_id)) is None
+    assert db.fetch_project_profile(int(new_root_id)) is None
+
+    model.undo_stack.redo()
+    assert db.fetch_task_by_id(int(new_root_id)) is not None
+    assert db.fetch_project_profile(int(new_root_id)) is not None
+
+
+def test_subtree_template_inside_project_stays_plain_task_template(tmp_path, qapp):
+    db = Database(str(tmp_path / "pm_subtree_template.sqlite3"))
+    today, project_id, task_one, task_two = _seed_project(db)
+    db.save_project_profile(
+        project_id,
+        {
+            "objective": "Project root profile",
+            "target_date": (today + timedelta(days=8)).isoformat(),
+        },
+    )
+    planning_phase = next(row for row in db.fetch_project_phases(project_id) if row["name"] == "Planning")
+    db.set_task_phase(task_one, int(planning_phase["id"]))
+    db.set_task_dependencies(task_two, [task_one])
+
+    model = TaskTreeModel(db)
+    model.save_template_from_task("Child Template", task_one)
+    payload = model.load_template_payload("Child Template")
+    assert payload is not None
+    assert "project_template" not in payload
+    assert all(task.get("phase_id") is None for task in payload["tasks"])
+
+    new_root_id = model.create_tasks_from_template_payload(payload)
+    assert new_root_id is not None
+    new_task = db.fetch_task_by_id(int(new_root_id))
+    assert new_task is not None
+    assert new_task["phase_id"] is None
+    assert db.fetch_project_profile(int(new_root_id)) is None

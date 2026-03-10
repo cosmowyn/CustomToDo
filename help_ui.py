@@ -600,6 +600,8 @@ HELP_CHAPTERS: list[HelpChapter] = [
             <li><strong>Create from template</strong> inserts the saved structure under the current selection or at top level.</li>
             <li><strong>Delete template</strong> asks for confirmation before the saved template is permanently removed.</li>
             <li>Templates preserve hierarchy, notes, tags, custom-column values, attachments, and dependency structure where possible.</li>
+            <li>If the selected task is a project root, the saved template also includes its project profile, phases, milestones, deliverables, register entries, baseline, and internal task-to-project links.</li>
+            <li>If you save a subtree inside a project rather than the project root, it remains a normal task template and does not pull unrelated project state into the template.</li>
         </ul>
         <p><strong>Parameterized templates</strong> support placeholders such as <code>{project_name}</code>, <code>{due_date}</code>, <code>{owner}</code>, and <code>{location}</code>.</p>
         <ul>

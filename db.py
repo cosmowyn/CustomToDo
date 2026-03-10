@@ -3592,7 +3592,7 @@ class Database:
         cur = self.conn.cursor()
         cur.execute(
             """
-            SELECT pd.id, pd.predecessor_kind AS kind, pd.predecessor_id AS id,
+            SELECT pd.id AS edge_id, pd.predecessor_kind AS kind, pd.predecessor_id AS id,
                    pd.dep_type, pd.is_soft
             FROM pm_dependencies pd
             WHERE pd.successor_kind=? AND pd.successor_id=?
@@ -4697,6 +4697,433 @@ class Database:
         done_count = int(row["done_count"] or 0)
         pct = (100.0 * done_count / total) if total > 0 else 0.0
         return {"done": done_count, "total": total, "percent": pct}
+
+    def build_project_template_payload(self, project_task_id: int, task_ids: set[int] | None = None) -> dict | None:
+        project_id = int(project_task_id)
+        profile = self.fetch_project_profile(project_id)
+        if not profile:
+            return None
+
+        included_task_ids = {
+            int(row_id)
+            for row_id in (task_ids or set(self.fetch_project_task_ids(project_id)))
+            if int(row_id) > 0
+        }
+        if project_id not in included_task_ids:
+            return None
+
+        phases = self.fetch_project_phases(project_id)
+        included_phases = {int(row["id"]) for row in phases if row.get("id") is not None}
+        included_tasks_sql = ", ".join("?" for _ in sorted(included_task_ids))
+        cur = self.conn.cursor()
+        cur.execute(
+            f"""
+            SELECT id, phase_id
+            FROM tasks
+            WHERE id IN ({included_tasks_sql}) AND phase_id IS NOT NULL;
+            """,
+            tuple(sorted(included_task_ids)),
+        )
+        task_phase_refs = [
+            {
+                "task_id": int(row_data["id"]),
+                "phase_id": int(row_data["phase_id"]),
+            }
+            for row_data in (dict(row) for row in cur.fetchall())
+            if row_data.get("phase_id") is not None
+        ]
+
+        milestones = [
+            {
+                "id": int(row["id"]),
+                "title": str(row.get("title") or ""),
+                "description": str(row.get("description") or ""),
+                "phase_id": row.get("phase_id"),
+                "linked_task_id": row.get("linked_task_id"),
+                "start_date": row.get("start_date"),
+                "target_date": row.get("target_date"),
+                "baseline_target_date": row.get("baseline_target_date"),
+                "status": str(row.get("status") or "planned"),
+                "progress_percent": int(row.get("progress_percent") or 0),
+                "completed_at": row.get("completed_at"),
+                "dependencies": list(row.get("dependencies") or []),
+            }
+            for row in self.fetch_project_milestones(project_id)
+            if row.get("linked_task_id") is None or int(row["linked_task_id"]) in included_task_ids
+        ]
+        included_milestone_ids = {int(row["id"]) for row in milestones}
+
+        deliverables = [
+            {
+                "id": int(row["id"]),
+                "title": str(row.get("title") or ""),
+                "description": str(row.get("description") or ""),
+                "phase_id": row.get("phase_id"),
+                "linked_task_id": row.get("linked_task_id"),
+                "linked_milestone_id": row.get("linked_milestone_id"),
+                "due_date": row.get("due_date"),
+                "baseline_due_date": row.get("baseline_due_date"),
+                "acceptance_criteria": str(row.get("acceptance_criteria") or ""),
+                "version_ref": str(row.get("version_ref") or ""),
+                "status": str(row.get("status") or "planned"),
+                "completed_at": row.get("completed_at"),
+            }
+            for row in self.fetch_project_deliverables(project_id)
+            if (
+                (row.get("linked_task_id") is None or int(row["linked_task_id"]) in included_task_ids)
+                and (
+                    row.get("linked_milestone_id") is None
+                    or int(row["linked_milestone_id"]) in included_milestone_ids
+                )
+            )
+        ]
+
+        register_entries = [
+            {
+                "id": int(row["id"]),
+                "entry_type": str(row.get("entry_type") or "risk"),
+                "title": str(row.get("title") or ""),
+                "details": str(row.get("details") or ""),
+                "status": str(row.get("status") or "open"),
+                "severity": row.get("severity"),
+                "review_date": row.get("review_date"),
+                "linked_task_id": row.get("linked_task_id"),
+                "linked_milestone_id": row.get("linked_milestone_id"),
+            }
+            for row in self.fetch_project_register_entries(project_id)
+            if (
+                (row.get("linked_task_id") is None or int(row["linked_task_id"]) in included_task_ids)
+                and (
+                    row.get("linked_milestone_id") is None
+                    or int(row["linked_milestone_id"]) in included_milestone_ids
+                )
+            )
+        ]
+
+        baseline = self.fetch_project_baseline(project_id)
+        baseline_payload = None
+        if baseline:
+            baseline_payload = {
+                "target_date": baseline.get("target_date"),
+                "effort_minutes": baseline.get("effort_minutes"),
+            }
+
+        return {
+            "root_task_id": project_id,
+            "profile": {
+                "objective": str(profile.get("objective") or ""),
+                "scope": str(profile.get("scope") or ""),
+                "out_of_scope": str(profile.get("out_of_scope") or ""),
+                "owner": str(profile.get("owner") or "Self") or "Self",
+                "stakeholders": str(profile.get("stakeholders") or ""),
+                "target_date": profile.get("target_date"),
+                "success_criteria": str(profile.get("success_criteria") or ""),
+                "project_status_health": profile.get("project_status_health"),
+                "summary": str(profile.get("summary") or ""),
+                "category": str(profile.get("category") or ""),
+            },
+            "phases": [
+                {
+                    "id": int(row["id"]),
+                    "name": str(row.get("name") or ""),
+                    "sort_order": int(row.get("sort_order") or 0),
+                }
+                for row in phases
+                if row.get("id") is not None and int(row["id"]) in included_phases
+            ],
+            "task_phase_refs": task_phase_refs,
+            "baseline": baseline_payload,
+            "milestones": milestones,
+            "deliverables": deliverables,
+            "register_entries": register_entries,
+        }
+
+    def restore_project_template_payload(self, payload: dict, task_id_map: dict[int, int]):
+        project_template = payload.get("project_template") if isinstance(payload, dict) else None
+        if not isinstance(project_template, dict):
+            return
+
+        old_root_id = project_template.get("root_task_id")
+        if old_root_id is None:
+            return
+        new_root_id = task_id_map.get(int(old_root_id))
+        if new_root_id is None:
+            return
+
+        profile = dict(project_template.get("profile") or {})
+        phases = list(project_template.get("phases") or [])
+        task_phase_refs = list(project_template.get("task_phase_refs") or [])
+        milestones = list(project_template.get("milestones") or [])
+        deliverables = list(project_template.get("deliverables") or [])
+        register_entries = list(project_template.get("register_entries") or [])
+        baseline = project_template.get("baseline")
+
+        phase_id_map: dict[int, int] = {}
+        milestone_id_map: dict[int, int] = {}
+        milestone_dependency_refs: list[tuple[int, list[dict]]] = []
+        stamp = now_iso()
+
+        with self.tx():
+            cur = self.conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO project_profiles(
+                    task_id,
+                    objective,
+                    scope,
+                    out_of_scope,
+                    owner,
+                    stakeholders,
+                    target_date,
+                    success_criteria,
+                    project_status_health,
+                    summary,
+                    category,
+                    created_at,
+                    updated_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(task_id) DO UPDATE SET
+                    objective=excluded.objective,
+                    scope=excluded.scope,
+                    out_of_scope=excluded.out_of_scope,
+                    owner=excluded.owner,
+                    stakeholders=excluded.stakeholders,
+                    target_date=excluded.target_date,
+                    success_criteria=excluded.success_criteria,
+                    project_status_health=excluded.project_status_health,
+                    summary=excluded.summary,
+                    category=excluded.category,
+                    updated_at=excluded.updated_at;
+                """,
+                (
+                    int(new_root_id),
+                    str(profile.get("objective") or ""),
+                    str(profile.get("scope") or ""),
+                    str(profile.get("out_of_scope") or ""),
+                    str(profile.get("owner") or "Self") or "Self",
+                    str(profile.get("stakeholders") or ""),
+                    profile.get("target_date"),
+                    str(profile.get("success_criteria") or ""),
+                    normalize_health(profile.get("project_status_health")),
+                    str(profile.get("summary") or ""),
+                    str(profile.get("category") or ""),
+                    stamp,
+                    stamp,
+                ),
+            )
+
+            for phase in phases:
+                cur.execute(
+                    """
+                    INSERT INTO project_phases(project_task_id, name, sort_order, created_at, updated_at)
+                    VALUES(?, ?, ?, ?, ?);
+                    """,
+                    (
+                        int(new_root_id),
+                        str(phase.get("name") or ""),
+                        int(phase.get("sort_order") or 0),
+                        stamp,
+                        stamp,
+                    ),
+                )
+                if phase.get("id") is not None:
+                    phase_id_map[int(phase["id"])] = int(cur.lastrowid)
+
+            for ref in task_phase_refs:
+                old_task_id = ref.get("task_id")
+                old_phase_id = ref.get("phase_id")
+                if old_task_id is None or old_phase_id is None:
+                    continue
+                new_task_id = task_id_map.get(int(old_task_id))
+                new_phase_id = phase_id_map.get(int(old_phase_id))
+                if new_task_id is None or new_phase_id is None:
+                    continue
+                cur.execute(
+                    "UPDATE tasks SET phase_id=?, last_update=? WHERE id=?;",
+                    (int(new_phase_id), stamp, int(new_task_id)),
+                )
+
+            for milestone in milestones:
+                old_phase_id = milestone.get("phase_id")
+                old_linked_task_id = milestone.get("linked_task_id")
+                new_phase_id = None if old_phase_id is None else phase_id_map.get(int(old_phase_id))
+                new_linked_task_id = (
+                    None if old_linked_task_id is None else task_id_map.get(int(old_linked_task_id))
+                )
+                cur.execute(
+                    """
+                    INSERT INTO milestones(
+                        project_task_id,
+                        title,
+                        description,
+                        phase_id,
+                        linked_task_id,
+                        start_date,
+                        target_date,
+                        baseline_target_date,
+                        status,
+                        progress_percent,
+                        completed_at,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    (
+                        int(new_root_id),
+                        str(milestone.get("title") or ""),
+                        str(milestone.get("description") or ""),
+                        new_phase_id,
+                        new_linked_task_id,
+                        milestone.get("start_date"),
+                        milestone.get("target_date"),
+                        milestone.get("baseline_target_date"),
+                        normalize_record_status(milestone.get("status"), MILESTONE_STATUSES, "planned"),
+                        int(milestone.get("progress_percent") or 0),
+                        milestone.get("completed_at"),
+                        stamp,
+                        stamp,
+                    ),
+                )
+                new_milestone_id = int(cur.lastrowid)
+                if milestone.get("id") is not None:
+                    milestone_id_map[int(milestone["id"])] = new_milestone_id
+                milestone_dependency_refs.append((new_milestone_id, list(milestone.get("dependencies") or [])))
+
+            for deliverable in deliverables:
+                old_phase_id = deliverable.get("phase_id")
+                old_linked_task_id = deliverable.get("linked_task_id")
+                old_linked_milestone_id = deliverable.get("linked_milestone_id")
+                new_phase_id = None if old_phase_id is None else phase_id_map.get(int(old_phase_id))
+                new_linked_task_id = (
+                    None if old_linked_task_id is None else task_id_map.get(int(old_linked_task_id))
+                )
+                new_linked_milestone_id = (
+                    None
+                    if old_linked_milestone_id is None
+                    else milestone_id_map.get(int(old_linked_milestone_id))
+                )
+                cur.execute(
+                    """
+                    INSERT INTO deliverables(
+                        project_task_id,
+                        title,
+                        description,
+                        phase_id,
+                        linked_task_id,
+                        linked_milestone_id,
+                        due_date,
+                        baseline_due_date,
+                        acceptance_criteria,
+                        version_ref,
+                        status,
+                        completed_at,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    (
+                        int(new_root_id),
+                        str(deliverable.get("title") or ""),
+                        str(deliverable.get("description") or ""),
+                        new_phase_id,
+                        new_linked_task_id,
+                        new_linked_milestone_id,
+                        deliverable.get("due_date"),
+                        deliverable.get("baseline_due_date"),
+                        str(deliverable.get("acceptance_criteria") or ""),
+                        str(deliverable.get("version_ref") or ""),
+                        normalize_record_status(deliverable.get("status"), DELIVERABLE_STATUSES, "planned"),
+                        deliverable.get("completed_at"),
+                        stamp,
+                        stamp,
+                    ),
+                )
+
+            for entry in register_entries:
+                old_linked_task_id = entry.get("linked_task_id")
+                old_linked_milestone_id = entry.get("linked_milestone_id")
+                new_linked_task_id = (
+                    None if old_linked_task_id is None else task_id_map.get(int(old_linked_task_id))
+                )
+                new_linked_milestone_id = (
+                    None
+                    if old_linked_milestone_id is None
+                    else milestone_id_map.get(int(old_linked_milestone_id))
+                )
+                cur.execute(
+                    """
+                    INSERT INTO project_register_entries(
+                        project_task_id,
+                        entry_type,
+                        title,
+                        details,
+                        status,
+                        severity,
+                        review_date,
+                        linked_task_id,
+                        linked_milestone_id,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    (
+                        int(new_root_id),
+                        normalize_register_type(entry.get("entry_type")),
+                        str(entry.get("title") or ""),
+                        str(entry.get("details") or ""),
+                        normalize_record_status(entry.get("status"), REGISTER_STATUSES, "open"),
+                        entry.get("severity"),
+                        entry.get("review_date"),
+                        new_linked_task_id,
+                        new_linked_milestone_id,
+                        stamp,
+                        stamp,
+                    ),
+                )
+
+            if isinstance(baseline, dict):
+                cur.execute(
+                    """
+                    INSERT INTO project_baselines(project_task_id, target_date, effort_minutes, created_at, updated_at)
+                    VALUES(?, ?, ?, ?, ?)
+                    ON CONFLICT(project_task_id) DO UPDATE SET
+                        target_date=excluded.target_date,
+                        effort_minutes=excluded.effort_minutes,
+                        updated_at=excluded.updated_at;
+                    """,
+                    (
+                        int(new_root_id),
+                        baseline.get("target_date"),
+                        baseline.get("effort_minutes"),
+                        stamp,
+                        stamp,
+                    ),
+                )
+
+        for new_milestone_id, refs in milestone_dependency_refs:
+            mapped_refs = []
+            for ref in refs:
+                kind = str(ref.get("kind") or "").strip().lower()
+                mapped_id = None
+                if kind == "task" and ref.get("id") is not None:
+                    mapped_id = task_id_map.get(int(ref["id"]))
+                elif kind == "milestone" and ref.get("id") is not None:
+                    mapped_id = milestone_id_map.get(int(ref["id"]))
+                if mapped_id is None:
+                    continue
+                mapped_refs.append(
+                    {
+                        "kind": kind,
+                        "id": int(mapped_id),
+                        "dep_type": str(ref.get("dep_type") or DEPENDENCY_TYPE_FINISH_TO_START),
+                        "is_soft": int(ref.get("is_soft") or 0),
+                    }
+                )
+            self.set_milestone_dependencies(int(new_milestone_id), mapped_refs)
 
     # ---------- Templates ----------
     def save_template(self, name: str, payload: dict, overwrite: bool = True):

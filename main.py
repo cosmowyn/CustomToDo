@@ -3783,10 +3783,13 @@ class MainWindow(QMainWindow):
         self._install_optional_global_capture_hotkey()
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return
+        tray_icon = self._resolved_tray_icon()
+        if tray_icon is None or tray_icon.isNull():
+            return
 
         tray = QSystemTrayIcon(self)
         tray.setToolTip(APP_NAME)
-        tray.setIcon(self.windowIcon())
+        tray.setIcon(tray_icon)
         menu = QMenu(self)
 
         quick_capture_act = QAction("Quick capture…", self)
@@ -3811,6 +3814,25 @@ class MainWindow(QMainWindow):
         )
         tray.show()
         self._tray_icon = tray
+
+    def _resolved_tray_icon(self):
+        icon = self.windowIcon()
+        if icon is None or icon.isNull():
+            icon = self.model.current_window_icon()
+        if icon is not None and not icon.isNull():
+            return icon
+        style = QApplication.style()
+        if style is None:
+            return None
+        for pixmap in (
+            QStyle.StandardPixmap.SP_DesktopIcon,
+            QStyle.StandardPixmap.SP_ComputerIcon,
+            QStyle.StandardPixmap.SP_FileIcon,
+        ):
+            fallback = style.standardIcon(pixmap)
+            if fallback is not None and not fallback.isNull():
+                return fallback
+        return None
 
     # ---------- Menus / toolbar ----------
     def _build_menus_and_toolbar(self):
@@ -5299,10 +5321,16 @@ class MainWindow(QMainWindow):
         icon = self.model.current_window_icon()
         if icon is not None:
             self.setWindowIcon(icon)
-            if self._tray_icon is not None:
-                self._tray_icon.setIcon(icon)
             if self._floating_table_window is not None:
                 self._floating_table_window.setWindowIcon(icon)
+        if self._tray_icon is not None:
+            tray_icon = self._resolved_tray_icon()
+            if tray_icon is None or tray_icon.isNull():
+                self._tray_icon.hide()
+            else:
+                self._tray_icon.setIcon(tray_icon)
+                if not self._tray_icon.isVisible():
+                    self._tray_icon.show()
         self.model.refresh_due_highlights()
 
     def _open_settings(self):

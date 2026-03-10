@@ -290,18 +290,21 @@ class CreateTasksFromPayloadCommand(QUndoCommand):
         self.payload = deepcopy(payload or {})
         self.parent_id = None if parent_id is None else int(parent_id)
         self.root_task_id: int | None = None
-        self.created_subtree = None
+        self.created_payload = None
 
     def redo(self):
-        if self.created_subtree is None:
+        if self.created_payload is None:
             self.root_task_id = self.model._create_tasks_from_template_payload_now(self.payload, parent_id=self.parent_id)
             if self.root_task_id is None:
                 self.setObsolete(True)
                 return
-            self.created_subtree = deepcopy(self.model.snapshot_subtree(int(self.root_task_id)))
+            self.created_payload = deepcopy(
+                self.model._build_template_payload_from_task(int(self.root_task_id))
+            )
         else:
-            self.model._db_restore_subtree(deepcopy(self.created_subtree))
-            self.root_task_id = int(self.created_subtree[0]["id"]) if self.created_subtree else None
+            self.model._db_restore_template_payload(deepcopy(self.created_payload))
+            tasks = self.created_payload.get("tasks") if isinstance(self.created_payload, dict) else None
+            self.root_task_id = int(tasks[0]["id"]) if isinstance(tasks, list) and tasks else None
 
     def undo(self):
         if self.root_task_id is None:

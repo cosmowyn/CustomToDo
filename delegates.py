@@ -206,10 +206,32 @@ class SmartDelegate(QStyledItemDelegate):
     MIN_ROW_HEIGHT = 38
     SEMANTIC_STRIP_WIDTH = 5
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._active_editor_root: QWidget | None = None
+
+    def _clear_active_editor_root(self, root: QWidget | None = None):
+        if root is None or self._active_editor_root is root:
+            self._active_editor_root = None
+
+    def _set_active_editor_root(self, root: QWidget | None):
+        self._active_editor_root = root
+
+    def _is_active_editor_root(self, root: QWidget | None) -> bool:
+        if root is None or self._active_editor_root is None:
+            return False
+        try:
+            return self._active_editor_root is root
+        except RuntimeError:
+            self._active_editor_root = None
+            return False
+
     def _install_editor_event_filters(self, root: QWidget):
         if root is None:
             return
         root.setProperty("_delegate_editor_root", True)
+        self._set_active_editor_root(root)
+        root.destroyed.connect(lambda *_args, root=root: self._clear_active_editor_root(root))
         root.installEventFilter(self)
         for child in root.findChildren(QWidget):
             child.installEventFilter(self)
@@ -249,7 +271,11 @@ class SmartDelegate(QStyledItemDelegate):
         root = self._editor_root_for_widget(editor)
         if root is None:
             root = editor if isinstance(editor, QWidget) else None
-        if root is None or not self._editor_belongs_to_view(root):
+        if (
+            root is None
+            or not self._is_active_editor_root(root)
+            or not self._editor_belongs_to_view(root)
+        ):
             return
         try:
             self.closeEditor.emit(root, QStyledItemDelegate.EndEditHint.NoHint)
@@ -260,7 +286,11 @@ class SmartDelegate(QStyledItemDelegate):
         root = self._editor_root_for_widget(editor)
         if root is None:
             root = editor if isinstance(editor, QWidget) else None
-        if root is None or not self._editor_belongs_to_view(root):
+        if (
+            root is None
+            or not self._is_active_editor_root(root)
+            or not self._editor_belongs_to_view(root)
+        ):
             return
         try:
             self.commitData.emit(root)
@@ -439,10 +469,15 @@ class SmartDelegate(QStyledItemDelegate):
         return base
 
     def eventFilter(self, editor, event):
+        root = self._editor_root_for_widget(editor)
+        if root is not None:
+            if event.type() in {QEvent.Type.FocusIn, QEvent.Type.Show}:
+                self._set_active_editor_root(root)
+            elif event.type() in {QEvent.Type.Hide, QEvent.Type.Close}:
+                self._clear_active_editor_root(root)
         if event.type() == QEvent.Type.KeyPress:
             key = event.key()
             if key in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
-                root = self._editor_root_for_widget(editor)
                 if root is not None:
                     self._commit_and_close_editor(root)
                     return True
