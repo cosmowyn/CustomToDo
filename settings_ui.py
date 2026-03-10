@@ -129,6 +129,7 @@ class SettingsDialog(QDialog):
         self._build_menus_toolbar_group()
         self._build_header_group()
         self._build_tree_group()
+        self._build_status_indicator_group()
         self._build_buttons_group()
         self._build_inputs_group()
         self._build_gantt_group()
@@ -403,6 +404,33 @@ class SettingsDialog(QDialog):
         g.layout().addRow("Alternate row background", self.tree_alt_bg_btn)
         g.layout().addRow("Text", self.tree_fg_btn)
         g.layout().addRow("Gridlines", self.grid_btn)
+
+    def _build_status_indicator_group(self):
+        g = self._mk_group(
+            "Task status indicator",
+            column="right",
+            subtitle="Configure the semantic status marker shown in the first visible task cell.",
+        )
+
+        self.status_indicator_shape = QComboBox()
+        self.status_indicator_shape.addItem("Bar", "bar")
+        self.status_indicator_shape.addItem("Dot", "dot")
+
+        self.status_indicator_size = QSpinBox()
+        self.status_indicator_size.setRange(1, 32)
+        self.status_indicator_size.setSuffix(" px")
+
+        self.status_indicator_width = QSpinBox()
+        self.status_indicator_width.setRange(1, 64)
+        self.status_indicator_width.setSuffix(" px")
+
+        self.status_indicator_shape.currentIndexChanged.connect(
+            self._update_status_indicator_controls
+        )
+
+        g.layout().addRow("Shape", self.status_indicator_shape)
+        g.layout().addRow("Size", self.status_indicator_size)
+        g.layout().addRow("Bar width", self.status_indicator_width)
 
     def _build_buttons_group(self):
         g = self._mk_group(
@@ -770,11 +798,24 @@ class SettingsDialog(QDialog):
                 style_cb.setCurrentIndex(idx if idx >= 0 else 0)
                 _set_color_btn(w["color_btn"], str(cfg.get("color", "#000000")))
 
+        indicator = self._theme.get("task_status_indicator", {})
+        shape = str(indicator.get("shape", "bar"))
+        shape_index = self.status_indicator_shape.findData(shape)
+        self.status_indicator_shape.setCurrentIndex(shape_index if shape_index >= 0 else 0)
+        self.status_indicator_size.setValue(int(indicator.get("size", 10)))
+        self.status_indicator_width.setValue(int(indicator.get("width", 10)))
+        self._update_status_indicator_controls()
+
         self.custom_qss.setPlainText(self._theme.get("custom_qss", ""))
 
     def _pull_controls_into_theme(self):
         self._theme["app_icon_path"] = self.icon_path.text().strip()
         self._theme["custom_qss"] = self.custom_qss.toPlainText()
+        self._theme["task_status_indicator"] = {
+            "shape": str(self.status_indicator_shape.currentData() or "bar"),
+            "size": int(self.status_indicator_size.value()),
+            "width": int(self.status_indicator_width.value()),
+        }
 
         for section in ("headers", "cells", "siblings"):
             if "borders" not in self._theme:
@@ -803,6 +844,10 @@ class SettingsDialog(QDialog):
             self._theme.setdefault("borders", {}).setdefault(section, {}).setdefault(side, {})
             self._theme["borders"][section][side]["color"] = chosen.name()
             _set_color_btn(btn, chosen.name())
+
+    def _update_status_indicator_controls(self):
+        is_bar = str(self.status_indicator_shape.currentData() or "bar") == "bar"
+        self.status_indicator_width.setEnabled(is_bar)
 
     def _browse_icon(self):
         path, _ = QFileDialog.getOpenFileName(

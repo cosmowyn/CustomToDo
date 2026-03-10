@@ -204,7 +204,8 @@ class SmartDelegate(QStyledItemDelegate):
 
     EXTRA_VPAD = 10
     MIN_ROW_HEIGHT = 38
-    SEMANTIC_STRIP_WIDTH = 5
+    DEFAULT_STATUS_INDICATOR_SIZE = 10
+    DEFAULT_STATUS_INDICATOR_WIDTH = 10
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -376,6 +377,17 @@ class SmartDelegate(QStyledItemDelegate):
             .get(side, {})
         ) or {}
 
+    def _status_indicator_cfg(self, index) -> dict:
+        theme = self._current_theme(index)
+        cfg = theme.get("task_status_indicator", {})
+        if not isinstance(cfg, dict):
+            cfg = {}
+        return {
+            "shape": str(cfg.get("shape", "bar")).strip().lower() or "bar",
+            "size": max(1, int(cfg.get("size", self.DEFAULT_STATUS_INDICATOR_SIZE))),
+            "width": max(1, int(cfg.get("width", self.DEFAULT_STATUS_INDICATOR_WIDTH))),
+        }
+
     def _pen_style(self, style_name: str):
         name = str(style_name or "solid").lower()
         mapping = {
@@ -438,18 +450,31 @@ class SmartDelegate(QStyledItemDelegate):
             and index.column() == self._first_visible_logical_column()
             and not (opt.state & QStyle.StateFlag.State_Selected)
         ):
-            marker_size = min(
-                self.SEMANTIC_STRIP_WIDTH,
-                opt.rect.width(),
-                opt.rect.height(),
-            )
-            marker_rect = opt.rect.adjusted(0, 0, 0, 0)
-            marker_rect.setWidth(marker_size)
-            marker_rect.setHeight(marker_size)
-            if marker_rect.width() > 0 and marker_rect.height() > 0:
-                painter.save()
-                painter.fillRect(marker_rect, semantic_color)
-                painter.restore()
+            indicator = self._status_indicator_cfg(index)
+            painter.save()
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(semantic_color)
+            if indicator["shape"] == "dot":
+                marker_size = min(
+                    indicator["size"],
+                    opt.rect.width(),
+                    opt.rect.height(),
+                )
+                if marker_size > 0:
+                    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                    painter.drawEllipse(
+                        opt.rect.left(),
+                        opt.rect.top(),
+                        marker_size,
+                        marker_size,
+                    )
+            else:
+                marker_rect = opt.rect.adjusted(0, 0, 0, 0)
+                marker_rect.setWidth(min(indicator["width"], opt.rect.width()))
+                marker_rect.setHeight(min(indicator["size"], opt.rect.height()))
+                if marker_rect.width() > 0 and marker_rect.height() > 0:
+                    painter.fillRect(marker_rect, semantic_color)
+            painter.restore()
 
         style = opt.widget.style() if opt.widget is not None else QApplication.style()
         style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)

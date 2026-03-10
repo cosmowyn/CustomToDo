@@ -249,6 +249,60 @@ def test_semantic_row_coloring_is_limited_to_first_visible_cell(
         qapp.processEvents()
 
 
+def test_semantic_row_coloring_honors_dot_and_bar_theme_settings(
+    tmp_path,
+    qapp,
+    monkeypatch,
+):
+    window = _build_window(tmp_path, qapp, monkeypatch)
+    try:
+        assert window.model.add_task_with_values("Color Test", due_date="2026-03-07")
+        qapp.processEvents()
+
+        theme_mgr = window.model.theme_mgr
+        theme = theme_mgr.load_theme(theme_mgr.current_theme_name())
+        theme["task_status_indicator"] = {
+            "shape": "bar",
+            "size": 12,
+            "width": 20,
+        }
+        theme_mgr.save_theme(theme_mgr.current_theme_name(), theme)
+
+        delegate = window.view.itemDelegate()
+        idx_desc = window.proxy.index(0, 0)
+
+        def _paint_cell(index):
+            image = QImage(180, 42, QImage.Format.Format_ARGB32)
+            image.fill(window.view.palette().base().color())
+            option = QStyleOptionViewItem()
+            option.widget = window.view
+            option.rect = image.rect()
+            option.state = QStyle.StateFlag.State_Enabled
+            painter = QPainter(image)
+            delegate.paint(painter, option, index)
+            painter.end()
+            return image
+
+        bar_img = _paint_cell(idx_desc)
+        assert bar_img.pixelColor(15, 2) != bar_img.pixelColor(60, 21)
+        assert bar_img.pixelColor(15, 20) == bar_img.pixelColor(60, 21)
+
+        theme["task_status_indicator"] = {
+            "shape": "dot",
+            "size": 12,
+            "width": 20,
+        }
+        theme_mgr.save_theme(theme_mgr.current_theme_name(), theme)
+
+        dot_img = _paint_cell(idx_desc)
+        assert dot_img.pixelColor(2, 2) != dot_img.pixelColor(60, 21)
+        assert dot_img.pixelColor(11, 2) == dot_img.pixelColor(60, 21)
+        assert dot_img.pixelColor(2, 20) == dot_img.pixelColor(60, 21)
+    finally:
+        window.close()
+        qapp.processEvents()
+
+
 def test_task_tree_context_menu_exposes_subtree_parent_context_actions(
     tmp_path,
     qapp,

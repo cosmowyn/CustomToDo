@@ -111,3 +111,22 @@ def test_settings_dialog_border_width_controls_support_floats(qapp):
     width_widget.setValue(2.25)
     dialog._pull_controls_into_theme()
     assert dialog._theme["borders"]["headers"]["top"]["width"] == 2.25
+
+
+def test_settings_dialog_status_indicator_controls_persist(qapp):
+    dialog = SettingsDialog(QSettings())
+
+    assert dialog.status_indicator_shape.currentData() == "bar"
+
+    dialog.status_indicator_shape.setCurrentIndex(
+        dialog.status_indicator_shape.findData("dot")
+    )
+    dialog.status_indicator_size.setValue(14)
+    dialog._pull_controls_into_theme()
+
+    assert dialog._theme["task_status_indicator"] == {
+        "shape": "dot",
+        "size": 14,
+        "width": dialog.status_indicator_width.value(),
+    }
+    assert dialog.status_indicator_width.isEnabled() is False

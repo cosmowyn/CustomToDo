@@ -233,6 +233,11 @@ def light_theme_dict() -> dict:
         },
         "colors": colors,
         "borders": _default_borders(colors),
+        "task_status_indicator": {
+            "shape": "bar",
+            "size": 10,
+            "width": 10,
+        },
         "custom_qss": "",
     }
 
@@ -298,6 +303,14 @@ class ThemeManager:
 
         out["app_icon_path"] = t.get("app_icon_path", out["app_icon_path"])
         out["custom_qss"] = t.get("custom_qss", out["custom_qss"])
+        out_indicator = out.get("task_status_indicator", {})
+        t_indicator = (
+            t.get("task_status_indicator", {})
+            if isinstance(t.get("task_status_indicator", {}), dict)
+            else {}
+        )
+        out_indicator.update(t_indicator)
+        out["task_status_indicator"] = out_indicator
 
         out_fonts = out.get("fonts", {})
         t_fonts = t.get("fonts", {}) if isinstance(t.get("fonts", {}), dict) else {}
