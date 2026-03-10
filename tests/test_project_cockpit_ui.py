@@ -11,6 +11,7 @@ from gantt_ui import (
     MAX_PIXELS_PER_DAY,
     MIN_PIXELS_PER_DAY,
     ProjectGanttView,
+    ROW_HEIGHT,
     TimelineHeaderWidget,
     _text_layout,
 )
@@ -147,6 +148,35 @@ def _sample_dashboard() -> dict:
             dependencies,
         ),
     }
+
+
+def _dashboard_with_reorderable_phase_siblings() -> dict:
+    dashboard = _sample_dashboard()
+    extra_task = {
+        "id": 7,
+        "description": "Validate rollout copy",
+        "parent_id": 1,
+        "phase_id": 10,
+        "start_date": "2026-03-11",
+        "due_date": "2026-03-14",
+        "status": "Todo",
+        "progress_percent": 0,
+        "blocked_by_count": 0,
+        "waiting_for": "",
+        "sort_order": 3,
+    }
+    tasks = list(dashboard["tasks"]) + [extra_task]
+    dashboard["tasks"] = tasks
+    dashboard["timeline_rows"] = build_timeline_rows(
+        dashboard["project"],
+        dashboard["phases"],
+        tasks,
+        dashboard["milestones"],
+        dashboard["deliverables"],
+        dashboard["summary"],
+        dashboard["dependencies"],
+    )
+    return dashboard
 
 
 def test_gantt_view_builds_hierarchy_and_dependencies(qapp):
@@ -791,6 +821,77 @@ def test_gantt_view_delete_requests_emit_for_task_and_project_rows(qapp):
 
     assert archived == [2, 1]
     assert deleted == [2]
+
+
+def test_gantt_view_vertical_reorder_emits_task_move_request(qapp):
+    widget = ProjectGanttView()
+    widget.resize(1100, 480)
+    widget.set_dashboard(_dashboard_with_reorderable_phase_siblings())
+    widget.show()
+    qapp.processEvents()
+
+    emitted: list[tuple[int, object, int]] = []
+    widget.taskMoveRequested.connect(
+        lambda task_id, parent_id, row: emitted.append(
+            (int(task_id), parent_id, int(row))
+        )
+    )
+
+    row_index = widget.row_index_for_uid("task:2")
+    assert row_index >= 0
+    widget.preview_row_reorder("task:7", QPointF(0.0, float(row_index * ROW_HEIGHT) + 1.0))
+    assert widget.reorder_preview_y() is not None
+
+    widget.finalize_row_reorder("task:7", QPointF(0.0, float(row_index * ROW_HEIGHT) + 1.0))
+
+    assert emitted == [(7, 1, 0)]
+    assert widget.reorder_preview_y() is None
+
+
+def test_gantt_tree_drop_uses_same_task_move_path(qapp):
+    widget = ProjectGanttView()
+    widget.resize(1100, 480)
+    widget.set_dashboard(_dashboard_with_reorderable_phase_siblings())
+    widget.show()
+    qapp.processEvents()
+
+    emitted: list[tuple[int, object, int]] = []
+    widget.taskMoveRequested.connect(
+        lambda task_id, parent_id, row: emitted.append(
+            (int(task_id), parent_id, int(row))
+        )
+    )
+
+    widget._handle_tree_row_drop("task:7", "task:2", False)
+
+    assert emitted == [(7, 1, 0)]
+
+
+def test_gantt_tree_context_menu_matches_chart_move_actions(qapp):
+    widget = ProjectGanttView()
+    widget.resize(1100, 480)
+    widget.set_dashboard(_dashboard_with_reorderable_phase_siblings())
+    widget.show()
+    qapp.processEvents()
+
+    row = widget.row_lookup["task:7"]
+    chart_actions = [
+        action.text() for action in widget._build_context_menu_for_row(
+            row,
+            date(2026, 3, 11),
+        ).actions()
+    ]
+    item = widget.item_lookup["task:7"]
+    rect = widget.tree.visualItemRect(item)
+    tree_actions = [
+        action.text()
+        for action in widget.build_tree_context_menu(rect.center()).actions()
+    ]
+
+    assert "Move up among siblings" in chart_actions
+    assert "Move down among siblings" in chart_actions
+    assert "Move up among siblings" in tree_actions
+    assert "Move down among siblings" in tree_actions
 
 
 def test_gantt_view_milestone_and_deliverable_creation_emit_payloads(qapp):

@@ -66,6 +66,7 @@ DAY_MARGIN_AFTER = 10
 HANDLE_WIDTH = 7.0
 BAR_TEXT_PADDING_X = 8.0
 BAR_TEXT_PADDING_Y = 3.0
+DRAG_AXIS_THRESHOLD = 6.0
 MIN_PIXELS_PER_DAY = 2.5
 MAX_PIXELS_PER_DAY = 64.0
 GANTT_SCALE_PRESETS = {
@@ -179,7 +180,7 @@ def _row_label(row: dict) -> str:
 
 class TimelineTreeWidget(QTreeWidget):
     rowActivated = Signal(str, int)
-    taskMoveRequested = Signal(int, object, int)
+    rowDropRequested = Signal(str, str, bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -199,6 +200,7 @@ class TimelineTreeWidget(QTreeWidget):
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
         self.setDropIndicatorShown(True)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
     def mouseDoubleClickEvent(self, event):
         item = self.itemAt(event.position().toPoint())
@@ -235,44 +237,24 @@ class TimelineTreeWidget(QTreeWidget):
         if current is None or target is None or current is target:
             event.ignore()
             return
+        dragged_uid = str(current.data(0, Qt.ItemDataRole.UserRole) or "")
+        target_uid = str(target.data(0, Qt.ItemDataRole.UserRole) or "")
         dragged_row = current.data(0, Qt.ItemDataRole.UserRole + 3) or {}
         target_row = target.data(0, Qt.ItemDataRole.UserRole + 3) or {}
         if str(dragged_row.get("kind") or "") != "task" or str(target_row.get("kind") or "") != "task":
             event.ignore()
             return
-        if current.parent() is not target.parent():
-            event.ignore()
-            return
-        actual_parent = dragged_row.get("actual_parent_task_id")
-        if actual_parent != target_row.get("actual_parent_task_id"):
-            event.ignore()
-            return
-        visual_parent = current.parent()
-        sibling_tasks: list[QTreeWidgetItem] = []
-        if visual_parent is None:
-            for index in range(self.topLevelItemCount()):
-                item = self.topLevelItem(index)
-                row = item.data(0, Qt.ItemDataRole.UserRole + 3) or {}
-                if str(row.get("kind") or "") == "task":
-                    sibling_tasks.append(item)
-        else:
-            for index in range(visual_parent.childCount()):
-                item = visual_parent.child(index)
-                row = item.data(0, Qt.ItemDataRole.UserRole + 3) or {}
-                if str(row.get("kind") or "") == "task":
-                    sibling_tasks.append(item)
-        if target not in sibling_tasks:
+        if (
+            str(dragged_row.get("parent_uid") or "")
+            != str(target_row.get("parent_uid") or "")
+            or dragged_row.get("actual_parent_task_id")
+            != target_row.get("actual_parent_task_id")
+        ):
             event.ignore()
             return
         target_rect = self.visualItemRect(target)
-        target_index = sibling_tasks.index(target)
-        if event.position().y() > target_rect.center().y():
-            target_index += 1
-        self.taskMoveRequested.emit(
-            int(dragged_row.get("item_id") or 0),
-            actual_parent,
-            max(0, target_index),
-        )
+        place_after = event.position().y() > target_rect.center().y()
+        self.rowDropRequested.emit(dragged_uid, target_uid, bool(place_after))
         event.acceptProposedAction()
 
 
@@ -684,6 +666,21 @@ class PlannerScene(QGraphicsScene):
                 painter.setPen(QPen(QColor("#DC2626"), 2))
                 painter.drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()))
 
+        preview_y = self.owner.reorder_preview_y()
+        if preview_y is not None and (rect.top() - 6.0 <= preview_y <= rect.bottom() + 6.0):
+            line_left = max(float(rect.left()), CHART_LEFT_MARGIN)
+            line_right = float(rect.right())
+            if line_right > line_left:
+                painter.setPen(QPen(QColor("#2563EB"), 2.2))
+                painter.drawLine(
+                    QPointF(line_left, preview_y),
+                    QPointF(line_right, preview_y),
+                )
+                painter.setBrush(QColor("#2563EB"))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawEllipse(QPointF(line_left, preview_y), 3.5, 3.5)
+                painter.drawEllipse(QPointF(line_right, preview_y), 3.5, 3.5)
+
         selected_rect = self.owner.selected_row_scene_rect()
         if selected_rect.isNull():
             return
@@ -825,23 +822,29 @@ class TimelineBarItem(QGraphicsItem):
         return QPointF(rect.right(), rect.center().y())
 
     def _handle_mode(self, pos: QPointF) -> str | None:
-        if not self.owner.row_is_editable(self.row):
-            return None
         style = str(self.row.get("render_style") or "")
         rect = self.base_rect()
         local_x = pos.x()
-        if style == "task":
+        can_edit_time = self.owner.row_is_editable(self.row)
+        can_reorder = self.owner.row_is_reorderable(self.row)
+        if style == "task" and can_edit_time:
             if abs(local_x - rect.left()) <= HANDLE_WIDTH:
                 return "resize_start"
             if abs(local_x - rect.right()) <= HANDLE_WIDTH:
                 return "resize_end"
-        return "move"
+        if can_edit_time and can_reorder:
+            return "move_or_reorder"
+        if can_edit_time:
+            return "move"
+        if can_reorder:
+            return "reorder"
+        return None
 
     def hoverMoveEvent(self, event):
         mode = self._handle_mode(event.pos())
         if mode == "resize_start" or mode == "resize_end":
             self.setCursor(Qt.CursorShape.SizeHorCursor)
-        elif mode == "move":
+        elif mode in {"move", "move_or_reorder", "reorder"}:
             self.setCursor(Qt.CursorShape.OpenHandCursor)
         else:
             self.unsetCursor()
@@ -860,7 +863,10 @@ class TimelineBarItem(QGraphicsItem):
         self._press_scene = event.scenePos()
         self._press_start = self.preview_start
         self._press_end = self.preview_end
-        self.setCursor(Qt.CursorShape.ClosedHandCursor if self._drag_mode == "move" else Qt.CursorShape.SizeHorCursor)
+        if self._drag_mode in {"move", "move_or_reorder", "reorder"}:
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        else:
+            self.setCursor(Qt.CursorShape.SizeHorCursor)
         event.accept()
 
     def mouseMoveEvent(self, event):
@@ -870,6 +876,21 @@ class TimelineBarItem(QGraphicsItem):
         if not self._drag_mode or self._press_start is None or self._press_end is None:
             super().mouseMoveEvent(event)
             return
+        dx = float(event.scenePos().x() - self._press_scene.x())
+        dy = float(event.scenePos().y() - self._press_scene.y())
+        if self._drag_mode in {"move_or_reorder", "reorder"}:
+            if self._drag_mode == "move_or_reorder":
+                if abs(dy) >= DRAG_AXIS_THRESHOLD and abs(dy) > abs(dx):
+                    self._drag_mode = "reorder"
+                elif abs(dx) >= DRAG_AXIS_THRESHOLD:
+                    self._drag_mode = "move"
+            elif abs(dy) < DRAG_AXIS_THRESHOLD:
+                event.accept()
+                return
+            if self._drag_mode == "reorder":
+                self.owner.preview_row_reorder(self.uid, event.scenePos())
+                event.accept()
+                return
         delta_days = self.owner.days_from_scene_delta(event.scenePos().x() - self._press_scene.x())
         if delta_days == 0:
             return
@@ -894,6 +915,21 @@ class TimelineBarItem(QGraphicsItem):
         if self._drag_mode == "select_only":
             self.owner.emit_chart_selection(self.uid)
             self._drag_mode = None
+            event.accept()
+            return
+        if self._drag_mode == "reorder":
+            owner = self.owner
+            uid = self.uid
+            scene_pos = QPointF(event.scenePos())
+            self._drag_mode = None
+            self.unsetCursor()
+            event.accept()
+            QTimer.singleShot(0, lambda: owner.finalize_row_reorder(uid, scene_pos))
+            return
+        if self._drag_mode == "move_or_reorder":
+            self.owner.emit_chart_selection(self.uid)
+            self._drag_mode = None
+            self.unsetCursor()
             event.accept()
             return
         owner = self.owner
@@ -1036,6 +1072,7 @@ class ProjectGanttView(QWidget):
         self._dependency_rebuild_timer = QTimer(self)
         self._dependency_rebuild_timer.setSingleShot(True)
         self._dependency_rebuild_timer.timeout.connect(self._flush_dependency_rebuild)
+        self._reorder_preview: dict | None = None
         self._scroll_repaint_pending = False
         self._scroll_repaint_timer = QTimer(self)
         self._scroll_repaint_timer.setSingleShot(True)
@@ -1184,9 +1221,10 @@ class ProjectGanttView(QWidget):
         self.collapse_btn.clicked.connect(self.collapse_all)
         self.tree.currentItemChanged.connect(self._on_tree_selection_changed)
         self.tree.rowActivated.connect(self.recordActivated.emit)
-        self.tree.taskMoveRequested.connect(self.taskMoveRequested.emit)
+        self.tree.rowDropRequested.connect(self._handle_tree_row_drop)
         self.tree.itemExpanded.connect(self._on_tree_expanded)
         self.tree.itemCollapsed.connect(self._on_tree_collapsed)
+        self.tree.customContextMenuRequested.connect(self._open_tree_context_menu_at)
         self.tree.verticalScrollBar().valueChanged.connect(self._sync_tree_to_chart_scroll)
         self.view.verticalScrollBar().valueChanged.connect(self._sync_chart_to_tree_scroll)
         self.view.horizontalScrollBar().valueChanged.connect(self.header.set_scroll_x)
@@ -1321,6 +1359,7 @@ class ProjectGanttView(QWidget):
 
     def set_dashboard(self, dashboard: dict | None):
         with measure_ui("gantt.set_dashboard", visible=self.isVisible()):
+            self.clear_row_reorder_preview()
             self.prime_dashboard_data(dashboard)
             self._rebuild_tree()
             self._rebuild_chart()
@@ -1396,6 +1435,7 @@ class ProjectGanttView(QWidget):
 
     def _rebuild_chart(self):
         with measure_ui("gantt._rebuild_chart", visible=self.isVisible()):
+            self.clear_row_reorder_preview()
             self._dependency_rebuild_pending = False
             self._dependency_rebuild_timer.stop()
             self._scroll_repaint_pending = False
@@ -2074,6 +2114,200 @@ class ProjectGanttView(QWidget):
     def _selected_row(self) -> dict | None:
         return self.row_lookup.get(self.selected_uid or "")
 
+    def row_is_reorderable(self, row: dict) -> bool:
+        if not isinstance(row, dict):
+            return False
+        if str(row.get("kind") or "").strip().lower() != "task":
+            return False
+        return bool(row.get("reorderable")) and int(row.get("item_id") or 0) > 0
+
+    def _task_rows_for_actual_parent(self, parent_id) -> list[dict]:
+        rows = [
+            row
+            for row in self.rows
+            if str(row.get("kind") or "").strip().lower() == "task"
+            and row.get("actual_parent_task_id") == parent_id
+        ]
+        rows.sort(
+            key=lambda row: (
+                int(row.get("sort_index") or 0),
+                str(row.get("label") or "").lower(),
+                int(row.get("item_id") or 0),
+            )
+        )
+        return rows
+
+    def _visible_reorder_bucket_rows(self, row: dict) -> list[dict]:
+        parent_uid = str(row.get("parent_uid") or "")
+        actual_parent = row.get("actual_parent_task_id")
+        return [
+            candidate
+            for candidate in self.visible_rows
+            if str(candidate.get("kind") or "").strip().lower() == "task"
+            and str(candidate.get("parent_uid") or "") == parent_uid
+            and candidate.get("actual_parent_task_id") == actual_parent
+        ]
+
+    def _build_row_reorder_target(self, row: dict, scene_y: float) -> dict | None:
+        if not self.row_is_reorderable(row):
+            return None
+        item_id = int(row.get("item_id") or 0)
+        actual_parent = row.get("actual_parent_task_id")
+        bucket_rows = self._visible_reorder_bucket_rows(row)
+        other_bucket_rows = [
+            candidate
+            for candidate in bucket_rows
+            if int(candidate.get("item_id") or 0) != item_id
+        ]
+        if not other_bucket_rows:
+            return None
+
+        insert_index = 0
+        for candidate in other_bucket_rows:
+            row_index = self.row_index_for_uid(str(candidate.get("uid") or ""))
+            if row_index < 0:
+                continue
+            center_y = (float(row_index) * ROW_HEIGHT) + (ROW_HEIGHT / 2.0)
+            if scene_y > center_y:
+                insert_index += 1
+
+        if insert_index <= 0:
+            first_row_index = self.row_index_for_uid(
+                str(other_bucket_rows[0].get("uid") or "")
+            )
+            line_y = float(first_row_index * ROW_HEIGHT) if first_row_index >= 0 else None
+        elif insert_index >= len(other_bucket_rows):
+            last_row_index = self.row_index_for_uid(
+                str(other_bucket_rows[-1].get("uid") or "")
+            )
+            line_y = (
+                float((last_row_index + 1) * ROW_HEIGHT)
+                if last_row_index >= 0
+                else None
+            )
+        else:
+            target_row_index = self.row_index_for_uid(
+                str(other_bucket_rows[insert_index].get("uid") or "")
+            )
+            line_y = (
+                float(target_row_index * ROW_HEIGHT)
+                if target_row_index >= 0
+                else None
+            )
+
+        global_siblings = self._task_rows_for_actual_parent(actual_parent)
+        current_index = -1
+        sibling_ids: list[int] = []
+        for candidate in global_siblings:
+            candidate_id = int(candidate.get("item_id") or 0)
+            if candidate_id == item_id:
+                current_index = len(sibling_ids)
+                continue
+            sibling_ids.append(candidate_id)
+        if current_index < 0:
+            return None
+
+        local_other_ids = [int(candidate.get("item_id") or 0) for candidate in other_bucket_rows]
+        if insert_index >= len(local_other_ids):
+            anchor_id = local_other_ids[-1]
+            try:
+                row_index = sibling_ids.index(anchor_id) + 1
+            except ValueError:
+                row_index = len(sibling_ids)
+        else:
+            anchor_id = local_other_ids[insert_index]
+            try:
+                row_index = sibling_ids.index(anchor_id)
+            except ValueError:
+                return None
+
+        if row_index == current_index:
+            return None
+        return {
+            "task_id": item_id,
+            "parent_id": actual_parent,
+            "row": int(row_index),
+            "line_y": line_y,
+        }
+
+    def _set_reorder_preview(self, target: dict | None):
+        old_line_y = None if self._reorder_preview is None else self._reorder_preview.get("line_y")
+        new_line_y = None if target is None else target.get("line_y")
+        if self._reorder_preview == target:
+            return
+        self._reorder_preview = dict(target) if target is not None else None
+        if not self._scene_stack_available():
+            return
+        dirty_y_values = [
+            float(value)
+            for value in {old_line_y, new_line_y}
+            if isinstance(value, (int, float))
+        ]
+        if not dirty_y_values:
+            return
+        for line_y in dirty_y_values:
+            dirty_rect = QRectF(
+                self.scene.sceneRect().left(),
+                max(0.0, line_y - 8.0),
+                self.scene.sceneRect().width(),
+                16.0,
+            )
+            self._invalidate_scene_layers(
+                QGraphicsScene.SceneLayer.ForegroundLayer,
+                dirty_rect,
+            )
+
+    def clear_row_reorder_preview(self):
+        self._set_reorder_preview(None)
+
+    def reorder_preview_y(self) -> float | None:
+        if self._reorder_preview is None:
+            return None
+        line_y = self._reorder_preview.get("line_y")
+        if isinstance(line_y, (int, float)):
+            return float(line_y)
+        return None
+
+    def preview_row_reorder(self, uid: str, scene_pos: QPointF):
+        row = self.row_lookup.get(str(uid or ""))
+        if row is None:
+            self.clear_row_reorder_preview()
+            return
+        self._set_reorder_preview(
+            self._build_row_reorder_target(row, float(scene_pos.y()))
+        )
+
+    def finalize_row_reorder(self, uid: str, scene_pos: QPointF):
+        row = self.row_lookup.get(str(uid or ""))
+        target = None
+        if row is not None:
+            target = self._build_row_reorder_target(row, float(scene_pos.y()))
+        self.clear_row_reorder_preview()
+        if target is None:
+            self.emit_chart_selection(uid)
+            return
+        self.taskMoveRequested.emit(
+            int(target.get("task_id") or 0),
+            target.get("parent_id"),
+            int(target.get("row") or 0),
+        )
+        self.emit_chart_selection(uid)
+
+    def _handle_tree_row_drop(self, dragged_uid: str, target_uid: str, place_after: bool):
+        target_row = self.row_lookup.get(str(target_uid or ""))
+        dragged_row = self.row_lookup.get(str(dragged_uid or ""))
+        if dragged_row is None or target_row is None:
+            return
+        target_row_index = self.row_index_for_uid(str(target_uid or ""))
+        if target_row_index < 0:
+            return
+        scene_y = float(target_row_index * ROW_HEIGHT)
+        if place_after:
+            scene_y += float(ROW_HEIGHT)
+        else:
+            scene_y += 1.0
+        self.finalize_row_reorder(str(dragged_uid or ""), QPointF(0.0, scene_y))
+
     def _selected_task_row_id(self) -> int | None:
         row = self._selected_row()
         if row is None:
@@ -2260,34 +2494,20 @@ class ProjectGanttView(QWidget):
             int(row.get("item_id") or 0),
         )
 
-    def _update_summary_label(self):
-        row = self._selected_row()
-        if row is None:
-            count = len(self.visible_rows)
-            self.summary_label.setText(
-                f"{count} visible row(s). Double-click empty space to add a task, "
-                "drag bars to reschedule work."
-            )
-            return
-        start = str(row.get("display_start_date") or row.get("start_date") or "–")
-        end = str(row.get("display_end_date") or row.get("end_date") or "–")
-        status = str(row.get("status") or "").replace("_", " ").title() or "No status"
-        self.summary_label.setText(
-            f"Selected: {str(row.get('label') or '')} | "
-            f"{str(row.get('kind') or '').title()} | "
-            f"{start} -> {end} | {status}"
-        )
+    def _default_anchor_date_for_row(self, row: dict | None) -> date:
+        if not isinstance(row, dict):
+            return today_local()
+        for key in ("display_start_date", "start_date", "display_end_date", "end_date"):
+            parsed = _ensure_date(str(row.get(key) or None))
+            if parsed is not None:
+                return parsed
+        return today_local()
 
-    def build_context_menu(self, pos: QPoint) -> QMenu:
-        scene_pos = self.view.mapToScene(pos)
-        hit_item = self.view.itemAt(pos)
-        row = None
-        if isinstance(hit_item, TimelineBarItem):
-            row = hit_item.row
-            self.select_uid(hit_item.uid, from_chart=False, ensure_visible=False)
-        elif self.visible_rows:
-            row = self._row_for_scene_pos(scene_pos)
-        anchor_date = self.scene_x_to_date(scene_pos.x())
+    def _build_context_menu_for_row(
+        self,
+        row: dict | None,
+        anchor_date: date,
+    ) -> QMenu:
         row_uid = str(row.get("uid") or "") if row else None
         menu = QMenu(self)
 
@@ -2386,22 +2606,74 @@ class ProjectGanttView(QWidget):
             )
             menu.addAction(dep_action)
 
-        if row is not None and str(row.get("kind") or "") == "task":
+        if row is not None and self.row_is_reorderable(row):
             move_up_action = QAction("Move up among siblings", menu)
             move_up_action.triggered.connect(
-                lambda: self.taskMoveRelativeRequested.emit(int(row.get("item_id") or 0), -1)
+                lambda: self.taskMoveRelativeRequested.emit(
+                    int(row.get("item_id") or 0), -1
+                )
             )
             move_down_action = QAction("Move down among siblings", menu)
             move_down_action.triggered.connect(
-                lambda: self.taskMoveRelativeRequested.emit(int(row.get("item_id") or 0), 1)
+                lambda: self.taskMoveRelativeRequested.emit(
+                    int(row.get("item_id") or 0), 1
+                )
             )
             menu.addAction(move_up_action)
             menu.addAction(move_down_action)
 
         return menu
 
+    def _update_summary_label(self):
+        row = self._selected_row()
+        if row is None:
+            count = len(self.visible_rows)
+            self.summary_label.setText(
+                f"{count} visible row(s). Double-click empty space to add a task, "
+                "drag bars to reschedule work."
+            )
+            return
+        start = str(row.get("display_start_date") or row.get("start_date") or "–")
+        end = str(row.get("display_end_date") or row.get("end_date") or "–")
+        status = str(row.get("status") or "").replace("_", " ").title() or "No status"
+        self.summary_label.setText(
+            f"Selected: {str(row.get('label') or '')} | "
+            f"{str(row.get('kind') or '').title()} | "
+            f"{start} -> {end} | {status}"
+        )
+
+    def build_context_menu(self, pos: QPoint) -> QMenu:
+        scene_pos = self.view.mapToScene(pos)
+        hit_item = self.view.itemAt(pos)
+        row = None
+        if isinstance(hit_item, TimelineBarItem):
+            row = hit_item.row
+            self.select_uid(hit_item.uid, from_chart=False, ensure_visible=False)
+        elif self.visible_rows:
+            row = self._row_for_scene_pos(scene_pos)
+        anchor_date = self.scene_x_to_date(scene_pos.x())
+        return self._build_context_menu_for_row(row, anchor_date)
+
     def _open_context_menu_at(self, pos: QPoint):
         self.build_context_menu(pos).exec(self.view.viewport().mapToGlobal(pos))
+
+    def build_tree_context_menu(self, pos: QPoint) -> QMenu:
+        item = self.tree.itemAt(pos)
+        row = None
+        if item is not None:
+            uid = str(item.data(0, Qt.ItemDataRole.UserRole) or "")
+            row = self.row_lookup.get(uid)
+            if row is not None:
+                self.select_uid(uid, from_chart=False, ensure_visible=False)
+        return self._build_context_menu_for_row(
+            row,
+            self._default_anchor_date_for_row(row),
+        )
+
+    def _open_tree_context_menu_at(self, pos: QPoint):
+        self.build_tree_context_menu(pos).exec(
+            self.tree.viewport().mapToGlobal(pos)
+        )
 
     def nudge_selection(self, mode: str, delta_days: int):
         row = self._selected_row()

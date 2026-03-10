@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from datetime import date
 
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QPointF, QSettings
 from PySide6.QtWidgets import QListWidget
 
+from gantt_ui import ROW_HEIGHT
 import main as main_module
 from main import MainWindow
 from workspace_profiles import WorkspaceProfileManager
@@ -209,6 +210,7 @@ def test_project_timeline_can_create_task_directly_in_main_window(
 
         window.project_dock.show()
         window._focus_task_by_id(project_id)
+        window.project_panel.tabs.setCurrentWidget(window.project_panel.timeline_tab_page)
         qapp.processEvents()
 
         window.project_panel.timeline_widget.create_task_at(
@@ -312,6 +314,77 @@ def test_archiving_project_root_from_cockpit_removes_project_context(
         }
         assert window.model.fetch_project_dashboard(project_id) is None
         assert window.project_panel.project_combo.findData(project_id) == -1
+    finally:
+        window.close()
+        qapp.processEvents()
+
+
+def test_project_timeline_vertical_reorder_updates_task_tree_and_undo(
+    tmp_path,
+    qapp,
+    monkeypatch,
+):
+    window = _build_window(tmp_path, qapp, monkeypatch)
+    try:
+        assert window.model.add_task_with_values("Project A")
+        project_id = int(window.model.last_added_task_id())
+        window.model.set_task_start_date(project_id, "2026-03-10")
+        window.model.set_task_due_date(project_id, "2026-03-20")
+
+        assert window.model.add_task_with_values("Child A1", parent_id=project_id)
+        child_one = int(window.model.last_added_task_id())
+        window.model.set_task_start_date(child_one, "2026-03-11")
+        window.model.set_task_due_date(child_one, "2026-03-12")
+
+        assert window.model.add_task_with_values("Child A2", parent_id=project_id)
+        child_two = int(window.model.last_added_task_id())
+        window.model.set_task_start_date(child_two, "2026-03-13")
+        window.model.set_task_due_date(child_two, "2026-03-14")
+
+        assert window.model.add_task_with_values("Child A3", parent_id=project_id)
+        child_three = int(window.model.last_added_task_id())
+        window.model.set_task_start_date(child_three, "2026-03-15")
+        window.model.set_task_due_date(child_three, "2026-03-16")
+
+        window.project_dock.show()
+        window._focus_task_by_id(project_id)
+        window.project_panel.tabs.setCurrentWidget(window.project_panel.timeline_tab_page)
+        qapp.processEvents()
+
+        row_index = window.project_panel.timeline_widget.row_index_for_uid(
+            f"task:{child_one}"
+        )
+        assert row_index >= 0
+
+        window.project_panel.timeline_widget.finalize_row_reorder(
+            f"task:{child_three}",
+            QPointF(0.0, float(row_index * ROW_HEIGHT) + 1.0),
+        )
+        qapp.processEvents()
+
+        assert window.model.sibling_order(project_id) == [
+            child_three,
+            child_one,
+            child_two,
+        ]
+        assert window._selected_task_id() == child_three
+        assert window.project_panel.timeline_widget.selected_uid == f"task:{child_three}"
+
+        window.model.undo_stack.undo()
+        qapp.processEvents()
+        assert window.model.sibling_order(project_id) == [
+            child_one,
+            child_two,
+            child_three,
+        ]
+
+        window.model.undo_stack.redo()
+        qapp.processEvents()
+        assert window.model.sibling_order(project_id) == [
+            child_three,
+            child_one,
+            child_two,
+        ]
     finally:
         window.close()
         qapp.processEvents()
