@@ -9,14 +9,14 @@ try:
 except Exception:
     pass
 
-from PySide6.QtCore import Qt, QTimer, QModelIndex, QEvent, QDateTime, QUrl, Signal
+from PySide6.QtCore import Qt, QTimer, QModelIndex, QEvent, QDateTime, QUrl, Signal, QPersistentModelIndex
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTreeView, QPushButton, QToolBar, QMenu, QMessageBox, QAbstractItemView,
     QLineEdit, QDockWidget, QLabel, QToolButton, QComboBox, QInputDialog,
     QFileDialog, QListWidget, QListWidgetItem, QUndoView, QScrollArea,
-    QStyle, QSystemTrayIcon,
+    QStyle, QSystemTrayIcon, QAbstractItemDelegate,
     QGridLayout, QGroupBox, QSizePolicy, QLayout, QHeaderView
 )
 
@@ -112,6 +112,143 @@ class FloatingTaskTableWindow(QMainWindow):
         event.ignore()
 
 
+class TaskTreeView(QTreeView):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._delegate_editor_root: QWidget | None = None
+        self._delegate_editor_index = QPersistentModelIndex()
+        self._finishing_delegate_editor = False
+        self._tracked_model = None
+
+    def setModel(self, model):
+        if self._tracked_model is not None:
+            try:
+                self._tracked_model.modelAboutToBeReset.disconnect(
+                    self._prepare_for_editor_invalidation
+                )
+            except Exception:
+                pass
+            try:
+                self._tracked_model.layoutAboutToBeChanged.disconnect(
+                    self._prepare_for_editor_invalidation
+                )
+            except Exception:
+                pass
+            try:
+                self._tracked_model.rowsAboutToBeRemoved.disconnect(
+                    self._prepare_for_editor_invalidation
+                )
+            except Exception:
+                pass
+        super().setModel(model)
+        self._tracked_model = model
+        if model is None:
+            return
+        model.modelAboutToBeReset.connect(self._prepare_for_editor_invalidation)
+        model.layoutAboutToBeChanged.connect(self._prepare_for_editor_invalidation)
+        model.rowsAboutToBeRemoved.connect(self._prepare_for_editor_invalidation)
+
+    def register_delegate_editor(self, root: QWidget, index: QModelIndex):
+        if root is None:
+            return
+        self._delegate_editor_root = root
+        self._delegate_editor_index = QPersistentModelIndex(index)
+        root.destroyed.connect(
+            lambda *_args, editor=root: self._clear_delegate_editor(editor)
+        )
+
+    def has_active_delegate_editor(self) -> bool:
+        root = self._delegate_editor_root
+        if root is None:
+            return False
+        try:
+            return root.parentWidget() is not None
+        except RuntimeError:
+            self._clear_delegate_editor(root)
+            return False
+
+    def _resolve_delegate_editor_root(self, editor) -> QWidget | None:
+        root = self._delegate_editor_root
+        if root is None:
+            return None
+        cur = editor if isinstance(editor, QWidget) else None
+        while cur is not None:
+            if cur is root:
+                return root
+            cur = cur.parentWidget()
+        return None
+
+    def _clear_delegate_editor(self, editor=None):
+        root = self._delegate_editor_root
+        if root is None:
+            self._delegate_editor_index = QPersistentModelIndex()
+            return
+        if editor is None:
+            self._delegate_editor_root = None
+            self._delegate_editor_index = QPersistentModelIndex()
+            return
+        try:
+            if editor is root or self._resolve_delegate_editor_root(editor) is root:
+                self._delegate_editor_root = None
+                self._delegate_editor_index = QPersistentModelIndex()
+        except RuntimeError:
+            self._delegate_editor_root = None
+            self._delegate_editor_index = QPersistentModelIndex()
+
+    def finish_delegate_editor(self, editor=None, *, close: bool = True) -> bool:
+        root = (
+            self._delegate_editor_root
+            if editor is None
+            else self._resolve_delegate_editor_root(editor)
+        )
+        if root is None or self._finishing_delegate_editor:
+            return False
+        try:
+            if root.parentWidget() is None:
+                self._clear_delegate_editor(root)
+                return False
+        except RuntimeError:
+            self._clear_delegate_editor(root)
+            return False
+        if self.state() != QAbstractItemView.State.EditingState:
+            self._clear_delegate_editor(root)
+            return False
+        self._finishing_delegate_editor = True
+        try:
+            super().commitData(root)
+            if (
+                close
+                and self._delegate_editor_root is root
+                and self.state() == QAbstractItemView.State.EditingState
+            ):
+                super().closeEditor(root, QAbstractItemDelegate.EndEditHint.NoHint)
+        finally:
+            self._finishing_delegate_editor = False
+        return True
+
+    def _prepare_for_editor_invalidation(self, *_args):
+        root = self._delegate_editor_root
+        if root is None or self._finishing_delegate_editor:
+            return
+        if self.state() == QAbstractItemView.State.EditingState:
+            self.finish_delegate_editor(root, close=True)
+        if self._delegate_editor_root is root:
+            try:
+                super().closeEditor(
+                    root,
+                    QAbstractItemDelegate.EndEditHint.RevertModelCache,
+                )
+            except RuntimeError:
+                pass
+            self._clear_delegate_editor(root)
+
+    def closeEditor(self, editor, hint):
+        tracked = self._resolve_delegate_editor_root(editor)
+        super().closeEditor(editor, hint)
+        if tracked is not None:
+            self._clear_delegate_editor(tracked)
+
+
 class MainWindow(QMainWindow):
     REMINDER_MODE_NORMAL = "normal"
     REMINDER_MODE_MUTE_ALL = "mute_all"
@@ -205,7 +342,7 @@ class MainWindow(QMainWindow):
         ]
 
         # View
-        self.view = QTreeView()
+        self.view = TaskTreeView()
         self.view.setModel(self.proxy)
         self.view.setSelectionBehavior(QTreeView.SelectionBehavior.SelectRows)
         self.view.setSelectionMode(QTreeView.SelectionMode.ExtendedSelection)
@@ -1476,6 +1613,7 @@ class MainWindow(QMainWindow):
             )
 
     def _set_task_table_floating(self, floating: bool, *, show_after: bool | None = None):
+        self._finish_task_tree_editing()
         want_floating = bool(floating)
         currently_floating = self._is_task_table_floating()
         if want_floating == currently_floating:
@@ -1526,6 +1664,15 @@ class MainWindow(QMainWindow):
             self.controls_dock.show()
             if hasattr(self, "_toggle_controls_act"):
                 self._toggle_controls_act.setChecked(True)
+
+    def _finish_task_tree_editing(self):
+        view = getattr(self, "view", None)
+        if view is None or not hasattr(view, "finish_delegate_editor"):
+            return
+        try:
+            view.finish_delegate_editor()
+        except Exception:
+            pass
 
     def _show_and_focus_dock(
         self,
@@ -1680,6 +1827,7 @@ class MainWindow(QMainWindow):
     def _set_tree_visible(self, visible: bool, *, show_message: bool = True):
         if not hasattr(self, "tree_wrap"):
             return
+        self._finish_task_tree_editing()
         show_tree = bool(visible)
         if self._is_task_table_floating():
             win = self._ensure_floating_table_window()
@@ -2478,6 +2626,7 @@ class MainWindow(QMainWindow):
                 self.calendar.set_completion_summary({})
 
     def _on_undo_stack_index_changed(self, _index: int):
+        self._finish_task_tree_editing()
         self._refresh_details_dock()
         self._refresh_calendar_list()
         self._schedule_calendar_marker_refresh()
@@ -4961,6 +5110,7 @@ class MainWindow(QMainWindow):
         self._schedule_row_action_button_update()
 
     def _on_current_changed(self, *_):
+        self._finish_task_tree_editing()
         if hasattr(self, "details_panel"):
             self.details_panel.flush_pending_save()
         if hasattr(self, "project_panel"):
@@ -5196,6 +5346,7 @@ class MainWindow(QMainWindow):
         return pidx
 
     def _focus_task_by_id(self, task_id: int):
+        self._finish_task_tree_editing()
         pidx = self._proxy_index_for_task_id(
             int(task_id),
             reveal_if_needed=True,

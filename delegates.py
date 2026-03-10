@@ -208,33 +208,18 @@ class SmartDelegate(QStyledItemDelegate):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._active_editor_root: QWidget | None = None
-
-    def _clear_active_editor_root(self, root: QWidget | None = None):
-        if root is None or self._active_editor_root is root:
-            self._active_editor_root = None
-
-    def _set_active_editor_root(self, root: QWidget | None):
-        self._active_editor_root = root
-
-    def _is_active_editor_root(self, root: QWidget | None) -> bool:
-        if root is None or self._active_editor_root is None:
-            return False
-        try:
-            return self._active_editor_root is root
-        except RuntimeError:
-            self._active_editor_root = None
-            return False
 
     def _install_editor_event_filters(self, root: QWidget):
         if root is None:
             return
         root.setProperty("_delegate_editor_root", True)
-        self._set_active_editor_root(root)
-        root.destroyed.connect(lambda *_args, root=root: self._clear_active_editor_root(root))
         root.installEventFilter(self)
         for child in root.findChildren(QWidget):
             child.installEventFilter(self)
+
+    def _owning_view(self):
+        view = self.parent()
+        return view if isinstance(view, QAbstractItemView) else None
 
     def _editor_root_for_widget(self, widget) -> QWidget | None:
         cur = widget if isinstance(widget, QWidget) else None
@@ -247,56 +232,13 @@ class SmartDelegate(QStyledItemDelegate):
             cur = cur.parentWidget()
         return None
 
-    def _editor_belongs_to_view(self, editor) -> bool:
-        view = self.parent()
-        if not isinstance(view, QAbstractItemView):
-            return False
-        root = self._editor_root_for_widget(editor)
-        if root is None:
-            root = editor if isinstance(editor, QWidget) else None
-        if root is None:
-            return False
-        try:
-            cur = root
-            viewport = view.viewport()
-            while cur is not None:
-                if cur is viewport:
-                    return True
-                cur = cur.parentWidget()
-        except RuntimeError:
-            return False
-        return False
-
-    def _close_editor_if_owned(self, editor):
-        root = self._editor_root_for_widget(editor)
-        if root is None:
-            root = editor if isinstance(editor, QWidget) else None
-        if (
-            root is None
-            or not self._is_active_editor_root(root)
-            or not self._editor_belongs_to_view(root)
-        ):
-            return
-        try:
-            self.closeEditor.emit(root, QStyledItemDelegate.EndEditHint.NoHint)
-        except RuntimeError:
-            return
-
     def _commit_and_close_editor(self, editor):
-        root = self._editor_root_for_widget(editor)
-        if root is None:
-            root = editor if isinstance(editor, QWidget) else None
-        if (
-            root is None
-            or not self._is_active_editor_root(root)
-            or not self._editor_belongs_to_view(root)
-        ):
+        view = self._owning_view()
+        if view is None:
             return
-        try:
-            self.commitData.emit(root)
-        except RuntimeError:
-            return
-        QTimer.singleShot(0, lambda root=root: self._close_editor_if_owned(root))
+        finish = getattr(view, "finish_delegate_editor", None)
+        if callable(finish):
+            finish(editor, close=True)
 
     def _source_model_and_index(self, index):
         m = index.model()
@@ -470,11 +412,6 @@ class SmartDelegate(QStyledItemDelegate):
 
     def eventFilter(self, editor, event):
         root = self._editor_root_for_widget(editor)
-        if root is not None:
-            if event.type() in {QEvent.Type.FocusIn, QEvent.Type.Show}:
-                self._set_active_editor_root(root)
-            elif event.type() in {QEvent.Type.Hide, QEvent.Type.Close}:
-                self._clear_active_editor_root(root)
         if event.type() == QEvent.Type.KeyPress:
             key = event.key()
             if key in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
@@ -545,6 +482,9 @@ class SmartDelegate(QStyledItemDelegate):
             ed.setMinimumHeight(option.fontMetrics.height() + self.EXTRA_VPAD)
             ed.clearRequested.connect(lambda ed=ed: self._commit_and_close_editor(ed))
             self._install_editor_event_filters(ed)
+            view = self._owning_view()
+            if view is not None and hasattr(view, "register_delegate_editor"):
+                view.register_delegate_editor(ed, index)
             return ed
 
         if ctype == "datetime":
@@ -552,6 +492,9 @@ class SmartDelegate(QStyledItemDelegate):
             ed.setMinimumHeight(option.fontMetrics.height() + self.EXTRA_VPAD)
             ed.clearRequested.connect(lambda ed=ed: self._commit_and_close_editor(ed))
             self._install_editor_event_filters(ed)
+            view = self._owning_view()
+            if view is not None and hasattr(view, "register_delegate_editor"):
+                view.register_delegate_editor(ed, index)
             return ed
 
         if ctype == "int":
@@ -562,6 +505,9 @@ class SmartDelegate(QStyledItemDelegate):
                 ed.setRange(-1_000_000_000, 1_000_000_000)
             ed.setMinimumHeight(option.fontMetrics.height() + self.EXTRA_VPAD)
             self._install_editor_event_filters(ed)
+            view = self._owning_view()
+            if view is not None and hasattr(view, "register_delegate_editor"):
+                view.register_delegate_editor(ed, index)
             return ed
 
         if ctype == "bool":
@@ -569,6 +515,9 @@ class SmartDelegate(QStyledItemDelegate):
             cb.addItems(["No", "Yes"])
             cb.setMinimumHeight(option.fontMetrics.height() + self.EXTRA_VPAD)
             self._install_editor_event_filters(cb)
+            view = self._owning_view()
+            if view is not None and hasattr(view, "register_delegate_editor"):
+                view.register_delegate_editor(cb, index)
             return cb
 
         if ctype == "status" or self._is_status_column(index):
@@ -576,6 +525,9 @@ class SmartDelegate(QStyledItemDelegate):
             cb.addItems(STATUSES)
             cb.setMinimumHeight(option.fontMetrics.height() + self.EXTRA_VPAD)
             self._install_editor_event_filters(cb)
+            view = self._owning_view()
+            if view is not None and hasattr(view, "register_delegate_editor"):
+                view.register_delegate_editor(cb, index)
             return cb
 
         if ctype == "list":
@@ -584,11 +536,17 @@ class SmartDelegate(QStyledItemDelegate):
             cb.addItems(self._list_options(index))
             cb.setMinimumHeight(option.fontMetrics.height() + self.EXTRA_VPAD)
             self._install_editor_event_filters(cb)
+            view = self._owning_view()
+            if view is not None and hasattr(view, "register_delegate_editor"):
+                view.register_delegate_editor(cb, index)
             return cb
 
         ed = super().createEditor(parent, option, index)
         if isinstance(ed, QWidget):
             self._install_editor_event_filters(ed)
+            view = self._owning_view()
+            if view is not None and hasattr(view, "register_delegate_editor"):
+                view.register_delegate_editor(ed, index)
         return ed
 
     def setEditorData(self, editor, index):
