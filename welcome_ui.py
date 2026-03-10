@@ -30,6 +30,7 @@ class WelcomeDialog(QDialog):
     ACTION_EMPTY = "empty"
     ACTION_DEMO = "demo"
     ACTION_DEMO_WORKSPACE = "demo_workspace"
+    ACTION_PROJECT_TUTORIAL = "project_tutorial"
     ACTION_HELP = "help"
     ACTION_REVIEW = "review"
 
@@ -105,6 +106,10 @@ class WelcomeDialog(QDialog):
         )
         self.help_btn = QPushButton("Open help")
         self.help_btn.setToolTip("Open the embedded guide after closing this dialog.")
+        self.project_tutorial_btn = QPushButton("Start project tutorial")
+        self.project_tutorial_btn.setToolTip(
+            "Open the guided project tutorial and build a real project step by step."
+        )
         self.review_btn = QPushButton("Open review workflow")
         self.review_btn.setToolTip("Open the review workflow after closing this dialog.")
         self.cancel_btn = QPushButton("Close")
@@ -118,6 +123,7 @@ class WelcomeDialog(QDialog):
             self.start_empty_btn,
             self.demo_btn,
             self.demo_workspace_btn,
+            self.project_tutorial_btn,
             self.help_btn,
             self.review_btn,
             self.cancel_btn,
@@ -127,6 +133,9 @@ class WelcomeDialog(QDialog):
         self.start_empty_btn.clicked.connect(lambda: self._finish(self.ACTION_EMPTY))
         self.demo_btn.clicked.connect(lambda: self._finish(self.ACTION_DEMO))
         self.demo_workspace_btn.clicked.connect(lambda: self._finish(self.ACTION_DEMO_WORKSPACE))
+        self.project_tutorial_btn.clicked.connect(
+            lambda: self._finish(self.ACTION_PROJECT_TUTORIAL)
+        )
         self.help_btn.clicked.connect(lambda: self._finish(self.ACTION_HELP))
         self.review_btn.clicked.connect(lambda: self._finish(self.ACTION_REVIEW))
         self.cancel_btn.clicked.connect(self.reject)

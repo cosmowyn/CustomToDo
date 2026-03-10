@@ -67,6 +67,17 @@ from quick_capture_ui import QuickCaptureDialog
 from relationships_ui import RelationshipsPanel
 from snapshot_history_ui import SnapshotHistoryDialog
 from project_cockpit_ui import ProjectCockpitPanel
+from project_tutorial import (
+    ProjectTutorialSession,
+    ProjectTutorialSnapshot,
+    evaluate_step,
+    reset_session,
+    session_from_setting,
+    session_to_setting,
+    tutorial_step_at,
+    tutorial_step_count,
+)
+from project_tutorial_ui import ProjectTutorialPanel
 from platform_utils import shortcut_display_text, shortcut_sequence
 from workspace_profiles import WorkspaceProfileManager
 from workspace_ui import WorkspaceManagerDialog
@@ -304,6 +315,9 @@ class MainWindow(QMainWindow):
         self._analytics_panel_refresh_pending = False
         self._project_panel_dirty = True
         self._project_panel_context_signature: tuple[int | None, int | None] | None = None
+        self._project_tutorial_session = session_from_setting(
+            self.model.settings.value("ui/project_tutorial_session", "")
+        )
         self._reminder_mode = str(
             self.model.settings.value("ui/reminder_mode", self.REMINDER_MODE_NORMAL)
         ).strip() or self.REMINDER_MODE_NORMAL
@@ -584,6 +598,7 @@ class MainWindow(QMainWindow):
         self._init_filter_dock()
         self._init_details_dock()
         self._init_project_dock()
+        self._init_project_tutorial_dock()
         self._init_relationships_dock()
         self._init_undo_history_dock()
         self._init_focus_dock()
@@ -628,6 +643,11 @@ class MainWindow(QMainWindow):
         self.model.rowsRemoved.connect(lambda *_: self._schedule_focus_panel_refresh())
         self.model.rowsRemoved.connect(lambda *_: self._schedule_active_task_view_refresh())
         self.model.rowsRemoved.connect(self._mark_project_panel_dirty)
+        self.model.modelReset.connect(self._refresh_project_tutorial_panel)
+        self.proxy.modelReset.connect(self._refresh_project_tutorial_panel)
+        self.model.dataChanged.connect(lambda *_: self._refresh_project_tutorial_panel())
+        self.model.rowsInserted.connect(lambda *_: self._refresh_project_tutorial_panel())
+        self.model.rowsRemoved.connect(lambda *_: self._refresh_project_tutorial_panel())
         self.undo_stack.indexChanged.connect(self._on_undo_stack_index_changed)
 
         # Timer to refresh due-date gradient + foreground contrast
@@ -662,6 +682,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._schedule_task_header_layout)
         QTimer.singleShot(0, self._schedule_active_task_view_refresh)
         QTimer.singleShot(0, self._maybe_show_onboarding)
+        QTimer.singleShot(0, self._maybe_resume_project_tutorial)
 
     # ---------- Splash (close again once UI shows) ----------
     def showEvent(self, event):
@@ -1297,6 +1318,44 @@ class MainWindow(QMainWindow):
             lambda vis: self._toggle_project_act.setChecked(bool(vis)) if hasattr(self, "_toggle_project_act") else None
         )
         self.project_dock.visibilityChanged.connect(lambda vis: self._refresh_project_panel() if vis else None)
+
+    def _init_project_tutorial_dock(self):
+        self.project_tutorial_panel = ProjectTutorialPanel(self)
+        self.project_tutorial_panel.backRequested.connect(self._project_tutorial_back)
+        self.project_tutorial_panel.nextRequested.connect(self._project_tutorial_next)
+        self.project_tutorial_panel.restartRequested.connect(self._restart_project_tutorial)
+        self.project_tutorial_panel.closeRequested.connect(
+            lambda: self.project_tutorial_dock.hide()
+        )
+        self.project_tutorial_panel.primaryActionRequested.connect(
+            self._run_project_tutorial_primary_action
+        )
+        self.project_tutorial_panel.bindCurrentSelectionRequested.connect(
+            self._bind_project_tutorial_to_selection
+        )
+        self.project_tutorial_panel.openHelpRequested.connect(self._open_help_anchor)
+        self.project_tutorial_panel.projectIdeaChanged.connect(
+            self._update_project_tutorial_idea
+        )
+
+        self.project_tutorial_dock = QDockWidget("Project tutorial", self)
+        self.project_tutorial_dock.setObjectName("ProjectTutorialDock")
+        self.project_tutorial_dock.setWidget(
+            self._wrap_dock_content_scrollable(
+                self.project_tutorial_panel,
+                "ProjectTutorialDockScroll",
+            )
+        )
+        self._configure_dock_widget(self.project_tutorial_dock)
+        self.addDockWidget(
+            Qt.DockWidgetArea.RightDockWidgetArea,
+            self.project_tutorial_dock,
+        )
+        self.project_tutorial_dock.hide()
+        self.project_tutorial_dock.visibilityChanged.connect(
+            lambda vis: self._refresh_project_tutorial_panel() if vis else None
+        )
+        self._refresh_project_tutorial_panel()
 
     def _init_relationships_dock(self):
         self.relationships_panel = RelationshipsPanel(self)
@@ -1939,6 +1998,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "focus_panel"):
             self.focus_panel.set_current_summary("Current selection: none", None)
         self._clear_task_browser()
+        self._refresh_project_tutorial_panel()
 
     def _schedule_active_task_view_refresh(self):
         if self._active_task_views_refresh_pending:
@@ -2168,6 +2228,7 @@ class MainWindow(QMainWindow):
                 )
             if hasattr(self, "details_dock") and self.details_dock.isVisible():
                 self._refresh_task_browser()
+            self._refresh_project_tutorial_panel()
 
     def _refresh_details_dock(self):
         self._refresh_active_task_views()
@@ -3519,6 +3580,13 @@ class MainWindow(QMainWindow):
                 self._open_onboarding_dialog,
             ),
             PaletteCommand(
+                "help.project_tutorial",
+                "Open project tutorial",
+                "Start or resume the guided project cockpit tutorial",
+                ("tutorial", "gantt tutorial", "project tutorial", "cockpit tutorial"),
+                self._open_project_tutorial,
+            ),
+            PaletteCommand(
                 "workspace.manage",
                 "Open workspace profiles",
                 "Manage and switch named workspace databases",
@@ -3904,6 +3972,22 @@ class MainWindow(QMainWindow):
             return
         self._open_onboarding_dialog(force=True)
 
+    def _maybe_resume_project_tutorial(self):
+        session = self._project_tutorial_session
+        has_progress = bool(
+            session.active
+            and not session.completed
+            and (
+                session.step_index > 0
+                or session.project_task_id is not None
+                or session.project_idea
+            )
+        )
+        if not has_progress:
+            return
+        self.project_tutorial_dock.show()
+        self._refresh_project_tutorial_panel()
+
     def _load_demo_data(self):
         if self._task_count() > 0:
             QMessageBox.information(self, "Demo data not loaded", "Demo data is only added to an empty task list.")
@@ -3973,6 +4057,8 @@ class MainWindow(QMainWindow):
                 self._load_demo_data()
             elif action == WelcomeDialog.ACTION_DEMO_WORKSPACE:
                 self._open_demo_workspace()
+            elif action == WelcomeDialog.ACTION_PROJECT_TUTORIAL:
+                self._open_project_tutorial()
             elif action == WelcomeDialog.ACTION_HELP:
                 self._open_help_anchor("overview")
             elif action == WelcomeDialog.ACTION_REVIEW:
@@ -3981,6 +4067,217 @@ class MainWindow(QMainWindow):
                 self._refresh_review_panel()
         else:
             self.model.settings.setValue("ui/onboarding_completed", bool(dlg.remember.isChecked()))
+
+    def _save_project_tutorial_session(self):
+        self.model.settings.setValue(
+            "ui/project_tutorial_session",
+            session_to_setting(self._project_tutorial_session),
+        )
+
+    def _project_tutorial_snapshot(self) -> ProjectTutorialSnapshot:
+        session = self._project_tutorial_session
+        project_task_id = session.project_task_id
+        if project_task_id is None or not self._db_available():
+            return ProjectTutorialSnapshot()
+        task = self.db.fetch_task_by_id(int(project_task_id))
+        if not task or str(task.get("archived_at") or "").strip():
+            return ProjectTutorialSnapshot()
+        dashboard = self.db.fetch_project_dashboard(int(project_task_id), ensure_profile=False) or {}
+        profile = dashboard.get("profile") or {}
+        phases = list(dashboard.get("phases") or [])
+        tasks = [
+            row
+            for row in (dashboard.get("tasks") or [])
+            if int(row.get("id") or 0) != int(project_task_id)
+        ]
+        milestones = list(dashboard.get("milestones") or [])
+        deliverables = list(dashboard.get("deliverables") or [])
+        dependencies = list(dashboard.get("dependencies") or [])
+        summary = dashboard.get("summary") or {}
+        dated_task_count = sum(
+            1
+            for row in tasks
+            if str(row.get("start_date") or "").strip()
+            or str(row.get("due_date") or "").strip()
+        )
+        dated_item_count = (
+            dated_task_count
+            + sum(1 for row in milestones if str(row.get("target_date") or "").strip())
+            + sum(1 for row in deliverables if str(row.get("due_date") or "").strip())
+        )
+        blocker_count = (
+            int(summary.get("blocked_task_count") or 0)
+            + int(summary.get("waiting_task_count") or 0)
+            + int(summary.get("blocked_milestone_count") or 0)
+        )
+        return ProjectTutorialSnapshot(
+            project_exists=True,
+            project_name=str(task.get("description") or ""),
+            objective_present=bool(str(profile.get("objective") or "").strip()),
+            phase_count=len(phases),
+            work_task_count=len(tasks),
+            milestone_count=len(milestones),
+            dependency_count=len(dependencies),
+            blocker_count=blocker_count,
+            dated_item_count=dated_item_count,
+        )
+
+    def _refresh_project_tutorial_panel(self):
+        if not hasattr(self, "project_tutorial_panel"):
+            return
+        if not self.project_tutorial_dock.isVisible():
+            return
+        session = self._project_tutorial_session
+        if session.project_task_id is not None:
+            task = self.db.fetch_task_by_id(int(session.project_task_id)) if self._db_available() else None
+            if not task or str(task.get("archived_at") or "").strip():
+                session.project_task_id = None
+                self._save_project_tutorial_session()
+        step = tutorial_step_at(session.step_index)
+        snapshot = self._project_tutorial_snapshot()
+        is_complete, status_text = evaluate_step(step.step_id, session, snapshot)
+        if step.step_id == "complete" and is_complete:
+            session.completed = True
+            self._save_project_tutorial_session()
+        self.project_tutorial_panel.render_state(
+            session=session,
+            step=step,
+            step_index=session.step_index,
+            total_steps=tutorial_step_count(),
+            is_complete=is_complete,
+            status_text=status_text,
+            snapshot=snapshot,
+        )
+
+    def _open_project_tutorial(self):
+        if not self._project_tutorial_session.active:
+            self._project_tutorial_session = reset_session()
+            self._save_project_tutorial_session()
+        self.project_tutorial_dock.show()
+        self._refresh_project_tutorial_panel()
+        self._run_project_tutorial_primary_action(
+            tutorial_step_at(self._project_tutorial_session.step_index).step_id
+        )
+
+    def _restart_project_tutorial(self):
+        self._project_tutorial_session = reset_session()
+        self._save_project_tutorial_session()
+        self.project_tutorial_dock.show()
+        self._refresh_project_tutorial_panel()
+
+    def _project_tutorial_back(self):
+        session = self._project_tutorial_session
+        session.active = True
+        session.completed = False
+        session.step_index = max(0, int(session.step_index) - 1)
+        self._save_project_tutorial_session()
+        self.project_tutorial_dock.show()
+        self._refresh_project_tutorial_panel()
+
+    def _project_tutorial_next(self):
+        session = self._project_tutorial_session
+        session.active = True
+        session.step_index = min(
+            tutorial_step_count() - 1,
+            int(session.step_index) + 1,
+        )
+        if session.step_index >= tutorial_step_count() - 1:
+            session.completed = True
+        self._save_project_tutorial_session()
+        self.project_tutorial_dock.show()
+        self._refresh_project_tutorial_panel()
+
+    def _update_project_tutorial_idea(self, text: str):
+        session = self._project_tutorial_session
+        session.active = True
+        session.project_idea = str(text or "").strip()
+        self._save_project_tutorial_session()
+        self._refresh_project_tutorial_panel()
+
+    def _bind_project_tutorial_to_selection(self):
+        tid = self._selected_task_id()
+        if tid is None:
+            QMessageBox.information(
+                self,
+                "No task selected",
+                "Select the real project root task in the tree first.",
+            )
+            return
+        root_task_id = self.model.project_id_for_task(int(tid)) or int(tid)
+        task = self.db.fetch_task_by_id(int(root_task_id)) if self._db_available() else None
+        if not task:
+            QMessageBox.warning(self, "Task missing", "The selected task could not be loaded.")
+            return
+        self._project_tutorial_session.active = True
+        self._project_tutorial_session.project_task_id = int(root_task_id)
+        if not self._project_tutorial_session.project_idea:
+            self._project_tutorial_session.project_idea = str(task.get("description") or "").strip()
+        self._save_project_tutorial_session()
+        self.project_dock.show()
+        if hasattr(self, "_toggle_project_act"):
+            self._toggle_project_act.setChecked(True)
+        self._refresh_project_panel()
+        self._refresh_project_tutorial_panel()
+
+    def _run_project_tutorial_primary_action(self, step_id: str):
+        step_key = str(step_id or "").strip()
+        if step_key == "intro":
+            self.project_dock.show()
+            if hasattr(self, "_toggle_project_act"):
+                self._toggle_project_act.setChecked(True)
+            self._refresh_project_panel()
+            target = self.project_panel.focus_target()
+            if target is not None:
+                target.setFocus()
+            return
+        if step_key == "choose-project":
+            target = self.project_tutorial_panel.focus_target()
+            if target is not None:
+                target.setFocus()
+            return
+        if step_key == "create-root":
+            self._focus_task_workspace()
+            self._show_controls_dock()
+            idea = str(self._project_tutorial_session.project_idea or "").strip()
+            if idea and not str(self.quick_add.text() or "").strip():
+                self.quick_add.setText(idea)
+                self.quick_add.selectAll()
+            self._focus_quick_add_input()
+            return
+        if step_key == "define-phases":
+            self.project_dock.show()
+            if hasattr(self, "_toggle_project_act"):
+                self._toggle_project_act.setChecked(True)
+            self.project_panel.show_tab("Overview")
+            self._refresh_project_panel()
+            self.project_panel.add_phase_btn.setFocus()
+            return
+        if step_key == "add-tasks":
+            if self._project_tutorial_session.project_task_id is not None:
+                self._focus_task_by_id(int(self._project_tutorial_session.project_task_id))
+            self._focus_task_workspace()
+            self._focus_quick_add_input()
+            return
+        if step_key == "add-milestones":
+            self.project_dock.show()
+            if hasattr(self, "_toggle_project_act"):
+                self._toggle_project_act.setChecked(True)
+            self.project_panel.show_tab("Milestones")
+            self._refresh_project_panel()
+            self.project_panel.add_milestone_btn.setFocus()
+            return
+        if step_key in {"dependencies", "timeline", "review"}:
+            self.project_dock.show()
+            if hasattr(self, "_toggle_project_act"):
+                self._toggle_project_act.setChecked(True)
+            self.project_panel.show_tab("Timeline")
+            self._refresh_project_panel()
+            target = self.project_panel.focus_target()
+            if target is not None:
+                target.setFocus()
+            return
+        if step_key == "complete":
+            self._open_help_anchor("project-tutorial")
 
     def _ensure_quick_capture_dialog(self) -> QuickCaptureDialog:
         if self._quick_capture_dialog is None:
@@ -4305,6 +4602,9 @@ class MainWindow(QMainWindow):
         onboarding_act = QAction("Quick Start…", self)
         onboarding_act.triggered.connect(self._open_onboarding_dialog)
 
+        project_tutorial_act = QAction("Project cockpit tutorial…", self)
+        project_tutorial_act.triggered.connect(self._open_project_tutorial)
+
         help_quick_add_act = QAction("Quick-add syntax", self)
         help_quick_add_act.triggered.connect(lambda: self._open_help_anchor("quick-add"))
 
@@ -4499,6 +4799,7 @@ class MainWindow(QMainWindow):
         m_tools.addAction(toggle_focus_act)
         m_tools.addAction(toggle_project_act)
         m_tools.addAction(onboarding_act)
+        m_tools.addAction(project_tutorial_act)
         m_tools.addSeparator()
         m_tools.addAction(diagnostics_act)
         m_tools.addAction(log_viewer_act)
@@ -4509,6 +4810,7 @@ class MainWindow(QMainWindow):
 
         m_help = menubar.addMenu("Help")
         m_help.addAction(onboarding_act)
+        m_help.addAction(project_tutorial_act)
         m_help.addAction(help_act)
         m_help.addSeparator()
         m_help.addAction(help_quick_add_act)

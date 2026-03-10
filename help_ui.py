@@ -444,11 +444,37 @@ HELP_CHAPTERS: list[HelpChapter] = [
         <p>The Quick Start dialog appears automatically for a new empty task list and is always available from the Help menu.</p>
         <ul>
             <li>It highlights the quickest ways to start: Quick add, Search, Command palette, and Review Workflow.</li>
-            <li>You can <strong>start empty</strong>, <strong>load a full showcase demo</strong>, <strong>open help</strong>, or <strong>jump straight into review mode</strong>.</li>
+            <li>You can <strong>start empty</strong>, <strong>load a full showcase demo</strong>, <strong>start the guided project tutorial</strong>, <strong>open help</strong>, or <strong>jump straight into review mode</strong>.</li>
             <li>The demo workspace now includes dense project timelines, milestones, deliverables, risk registers, reminders, recurrence, custom columns, attachments, templates, archive data, and saved views so you can tour the whole app immediately.</li>
             <li>The automatic first-run display is skipped for existing users with real task data, so upgrades do not become intrusive.</li>
             <li>You can disable automatic onboarding and reopen it later manually whenever needed.</li>
         </ul>
+        """,
+    ),
+    HelpChapter(
+        anchor="project-tutorial",
+        title="Guided Project Tutorial",
+        keywords=[
+            "tutorial",
+            "guided tutorial",
+            "gantt tutorial",
+            "project tutorial",
+            "cockpit tutorial",
+            "wizard",
+            "onboarding project",
+        ],
+        body_html="""
+        <p>The <strong>Project tutorial</strong> is a guided in-app assistant for building a real project from scratch. It is not demo data and it is not a passive help page.</p>
+        <ul>
+            <li>Open it from <strong>Help &gt; Project cockpit tutorial</strong>, the command palette, or the Quick Start dialog.</li>
+            <li>The tutorial teaches one concept at a time, then asks you to perform the matching action in the real app.</li>
+            <li>It uses your own project idea and your own project root task instead of loading fake sample data.</li>
+            <li>The session supports <strong>Back</strong> and <strong>Next</strong> navigation, and it keeps its current project binding and step progress in app settings so you can resume later.</li>
+            <li>The recommended flow is: choose a real project, create the project root, add phases, add real tasks, add a milestone, model a blocker or dependency, place work on the timeline, then review the plan.</li>
+            <li>The guide only uses light validation. If a step is not complete yet, the status line tells you what is still missing without blocking normal app use.</li>
+            <li>Use <strong>Use current selection</strong> to bind the tutorial to the selected task tree item. If you bind a child task, the tutorial automatically uses that task's project root.</li>
+        </ul>
+        <p>The goal is to leave you with a real project that exercises the cockpit meaningfully: phases, milestones, blockers, dependencies, and dated work on the timeline.</p>
         """,
     ),
     HelpChapter(

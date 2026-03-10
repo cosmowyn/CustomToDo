@@ -27,6 +27,7 @@ CONTEXT_HELP_TOPICS: dict[str, str] = {
     "calendar_agenda": "calendar",
     "analytics_panel": "analytics",
     "welcome_dialog": "onboarding",
+    "project_tutorial": "project-tutorial",
 }
 
 

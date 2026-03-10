@@ -665,6 +665,17 @@ class ProjectCockpitPanel(QWidget):
             return self.day_table
         return self.project_combo if self.project_combo.count() > 0 else self.category_combo
 
+    def show_tab(self, tab_title: str) -> bool:
+        wanted = str(tab_title or "").strip().lower()
+        if not wanted:
+            return False
+        for idx in range(self.tabs.count()):
+            title = str(self.tabs.tabText(idx) or "").strip().lower()
+            if title == wanted:
+                self.tabs.setCurrentIndex(idx)
+                return True
+        return False
+
     def _build_overview_tab(self):
         page = QWidget()
         layout = QVBoxLayout(page)
