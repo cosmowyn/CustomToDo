@@ -24,6 +24,12 @@ def test_backup_import_roundtrip_and_replace(tmp_path, monkeypatch):
     first_project_id = int(source.list_project_profiles()[0]["task_id"])
     first_phase = next(row for row in source.fetch_project_phases(first_project_id) if row["name"] == "Planning")
     source.set_project_phase_gantt_color(int(first_phase["id"]), "#663399")
+    source_category_folder = source.create_category_folder(
+        "Visual",
+        color_hex="#224466",
+        text_color_hex="#f8f9fa",
+        icon_name="emoji:🎨",
+    )
     payload = export_payload(source)
     source_projects = source.list_project_profiles()
     source_project_ids = [int(row["task_id"]) for row in source_projects]
@@ -45,6 +51,11 @@ def test_backup_import_roundtrip_and_replace(tmp_path, monkeypatch):
     assert len(target.list_templates()) == len(source.list_templates())
     assert len(target.list_project_profiles()) == len(source_projects)
     assert len(target.fetch_category_folders()) == len(source_category_folders)
+    imported_visual_folder = next(
+        row for row in target.fetch_category_folders()
+        if int(row["id"]) == source_category_folder
+    )
+    assert str(imported_visual_folder.get("text_color_hex") or "").lower() == "#f8f9fa"
     assert {
         int(row["id"]): row.get("category_folder_id")
         for row in target.fetch_tasks()

@@ -178,7 +178,7 @@ def export_payload(db: Database) -> dict:
 
     cur.execute(
         """
-        SELECT id, name, parent_folder_id, sort_order, color_hex, icon_name, identifier, created_at, updated_at
+        SELECT id, name, parent_folder_id, sort_order, color_hex, text_color_hex, icon_name, identifier, created_at, updated_at
         FROM category_folders
         ORDER BY sort_order ASC, LOWER(name), id ASC;
         """
@@ -735,6 +735,7 @@ def _import_category_folders(cur, folders: list[dict], mode: str) -> dict[int, i
                 mapped_parent_id,
                 int(row.get("sort_order") or 1),
                 str(row.get("color_hex") or "").strip() or None,
+                str(row.get("text_color_hex") or "").strip() or None,
                 str(row.get("icon_name") or "folder").strip() or "folder",
                 str(row.get("identifier") or "").strip() or None,
                 row.get("created_at") or now_iso(),
@@ -749,12 +750,13 @@ def _import_category_folders(cur, folders: list[dict], mode: str) -> dict[int, i
                         parent_folder_id,
                         sort_order,
                         color_hex,
+                        text_color_hex,
                         icon_name,
                         identifier,
                         created_at,
                         updated_at
                     )
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
                     (old_id, *folder_values),
                 )
@@ -767,12 +769,13 @@ def _import_category_folders(cur, folders: list[dict], mode: str) -> dict[int, i
                         parent_folder_id,
                         sort_order,
                         color_hex,
+                        text_color_hex,
                         icon_name,
                         identifier,
                         created_at,
                         updated_at
                     )
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?);
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
                     folder_values,
                 )

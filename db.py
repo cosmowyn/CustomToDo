@@ -32,7 +32,7 @@ from project_management import (
 
 
 RECURRENCE_FREQUENCIES = {"daily", "weekly", "monthly", "yearly"}
-LATEST_SCHEMA_VERSION = 8
+LATEST_SCHEMA_VERSION = 9
 MAX_CATEGORY_FOLDER_DEPTH = 10
 
 
@@ -316,6 +316,24 @@ class Database:
             for name in sorted(required_phase_columns - phase_columns):
                 issues.append(f"Missing required project_phases column: {name}")
 
+        required_category_folder_columns = {
+            "id",
+            "name",
+            "parent_folder_id",
+            "sort_order",
+            "color_hex",
+            "text_color_hex",
+            "icon_name",
+            "identifier",
+            "created_at",
+            "updated_at",
+        }
+        if "category_folders" in existing_tables:
+            cur.execute("PRAGMA table_info(category_folders);")
+            category_folder_columns = {str(r["name"]) for r in cur.fetchall()}
+            for name in sorted(required_category_folder_columns - category_folder_columns):
+                issues.append(f"Missing required category_folders column: {name}")
+
         return {"ok": not issues, "schema_version": version, "issues": issues}
 
     def schema_validation_report(self) -> dict:
@@ -422,6 +440,12 @@ class Database:
             cur.execute("PRAGMA user_version=8;")
             self.conn.commit()
             ver = 8
+
+        if ver < 9:
+            self._migrate_to_v9_category_folder_text_colors()
+            cur.execute("PRAGMA user_version=9;")
+            self.conn.commit()
+            ver = 9
 
     def _create_v1(self):
         cur = self.conn.cursor()
@@ -800,6 +824,7 @@ class Database:
                 parent_folder_id  INTEGER NULL,
                 sort_order        INTEGER NOT NULL DEFAULT 1,
                 color_hex         TEXT    NULL,
+                text_color_hex    TEXT    NULL,
                 icon_name         TEXT    NOT NULL DEFAULT 'folder',
                 identifier        TEXT    NULL,
                 created_at        TEXT    NOT NULL,
@@ -858,6 +883,9 @@ class Database:
     def _migrate_to_v8_phase_gantt_colors(self):
         self._add_column_if_missing("project_phases", "gantt_color_hex", "TEXT NULL")
 
+    def _migrate_to_v9_category_folder_text_colors(self):
+        self._add_column_if_missing("category_folders", "text_color_hex", "TEXT NULL")
+
     @contextmanager
     def tx(self):
         try:
@@ -872,7 +900,7 @@ class Database:
         cur = self.conn.cursor()
         cur.execute(
             """
-            SELECT id, name, parent_folder_id, sort_order, color_hex, icon_name, identifier, created_at, updated_at
+            SELECT id, name, parent_folder_id, sort_order, color_hex, text_color_hex, icon_name, identifier, created_at, updated_at
             FROM category_folders
             ORDER BY sort_order ASC, LOWER(name), id ASC;
             """
@@ -982,6 +1010,7 @@ class Database:
         parent_folder_id: int | None = None,
         *,
         color_hex: str | None = None,
+        text_color_hex: str | None = None,
         icon_name: str | None = None,
         identifier: str | None = None,
     ) -> int:
@@ -1008,18 +1037,20 @@ class Database:
                     parent_folder_id,
                     sort_order,
                     color_hex,
+                    text_color_hex,
                     icon_name,
                     identifier,
                     created_at,
                     updated_at
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?);
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 (
                     folder_name,
                     parent_id,
                     next_order,
                     str(color_hex or "").strip() or None,
+                    str(text_color_hex or "").strip() or None,
                     str(icon_name or "folder").strip() or "folder",
                     self._normalize_folder_identifier(identifier),
                     now_iso(),
@@ -1046,6 +1077,7 @@ class Database:
                 SET name=?,
                     parent_folder_id=?,
                     color_hex=?,
+                    text_color_hex=?,
                     icon_name=?,
                     identifier=?,
                     updated_at=?
@@ -1055,6 +1087,7 @@ class Database:
                     name,
                     parent_id,
                     str(payload.get("color_hex", existing.get("color_hex")) or "").strip() or None,
+                    str(payload.get("text_color_hex", existing.get("text_color_hex")) or "").strip() or None,
                     str(payload.get("icon_name", existing.get("icon_name") or "folder")).strip() or "folder",
                     self._normalize_folder_identifier(
                         payload.get("identifier", existing.get("identifier"))

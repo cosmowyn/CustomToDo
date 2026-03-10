@@ -106,7 +106,7 @@ HELP_CHAPTERS: list[HelpChapter] = [
             <li><strong>Add task</strong> creates a top-level task.</li>
             <li><strong>Add child task</strong> creates a nested task under the selected row.</li>
             <li><strong>Category folders</strong> let you group top-level tasks and projects without turning the group itself into a task.</li>
-            <li><strong>Subcategories</strong> can be nested up to <strong>10 levels</strong>, with their own color, icon, and identifier set from the context menu.</li>
+            <li><strong>Subcategories</strong> can be nested up to <strong>10 levels</strong>, with their own accent color, optional text color, identifier, and icon. Category icons can use built-in UI icons, emoji, or a chosen icon file.</li>
             <li><strong>Right-click empty tree space or a folder row</strong> to add or customize category folders. Right-click a top-level task to move it into a category or clear its category assignment.</li>
             <li><strong>Row gutter buttons</strong> stay visible to the left of the tree:
                 <ul>

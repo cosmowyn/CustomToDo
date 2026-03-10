@@ -15,7 +15,11 @@ from commands import (
     DeliverableMutationCommand, MilestoneMutationCommand, ProjectPhaseMutationCommand, TaskMutationCommand,
     TaskCollectionMutationCommand, CreateTasksFromPayloadCommand,
 )
-from category_folders_ui import folder_display_name, folder_icon
+from category_folders_ui import (
+    folder_display_name,
+    folder_icon,
+    folder_icon_description,
+)
 from project_intelligence import analyze_projects
 from project_management import PROJECT_HEALTH_LABELS
 from theme import ThemeManager
@@ -643,21 +647,24 @@ class TaskTreeModel(QAbstractItemModel):
             if role == Qt.ItemDataRole.DecorationRole and index.column() == 0:
                 return folder_icon(folder.get("icon_name"))
             if role == Qt.ItemDataRole.ToolTipRole:
-                path = str(folder.get("path") or folder_name)
+                path = str(folder.get("path") or display_name or "Category")
                 color = str(folder.get("color_hex") or "").strip()
+                text_color = str(folder.get("text_color_hex") or "").strip()
                 icon_name = str(folder.get("icon_name") or "folder").strip()
                 parts = [path]
                 if color:
                     parts.append(f"Color: {color}")
+                if text_color:
+                    parts.append(f"Text color: {text_color}")
                 if icon_name:
-                    parts.append(f"Icon: {icon_name}")
+                    parts.append(folder_icon_description(icon_name))
                 return " | ".join(parts)
             if role == Qt.ItemDataRole.FontRole and index.column() == 0:
                 font = QFont()
                 font.setBold(True)
                 return font
             if role == Qt.ItemDataRole.ForegroundRole and index.column() == 0:
-                color = str(folder.get("color_hex") or "").strip()
+                color = str(folder.get("text_color_hex") or folder.get("color_hex") or "").strip()
                 return QColor(color) if color else None
             if role == Qt.ItemDataRole.BackgroundRole:
                 color = str(folder.get("color_hex") or "").strip()
@@ -1315,6 +1322,7 @@ class TaskTreeModel(QAbstractItemModel):
         parent_folder_id: int | None = None,
         *,
         color_hex: str | None = None,
+        text_color_hex: str | None = None,
         icon_name: str | None = None,
         identifier: str | None = None,
     ) -> int:
@@ -1322,6 +1330,7 @@ class TaskTreeModel(QAbstractItemModel):
             name,
             parent_folder_id,
             color_hex=color_hex,
+            text_color_hex=text_color_hex,
             icon_name=icon_name,
             identifier=identifier,
         )

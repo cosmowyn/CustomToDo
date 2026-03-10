@@ -20,7 +20,7 @@ def test_database_rejects_newer_schema_version(tmp_path):
         Database(str(db_path))
 
 
-def test_database_migrates_v4_to_v8_project_management_categories_and_gantt_colors(tmp_path):
+def test_database_migrates_v4_to_v9_project_management_categories_and_gantt_colors(tmp_path):
     db_path = tmp_path / "legacy_v4.sqlite3"
 
     legacy = object.__new__(Database)
@@ -58,7 +58,7 @@ def test_database_migrates_v4_to_v8_project_management_categories_and_gantt_colo
 
     migrated = Database(str(db_path))
     try:
-        assert migrated.schema_user_version() == 8
+        assert migrated.schema_user_version() == 9
         assert migrated.pre_migration_backup_path() is not None
         assert migrated.fetch_project_profile(1) is None
         phases = migrated.fetch_project_phases(1)
@@ -73,5 +73,11 @@ def test_database_migrates_v4_to_v8_project_management_categories_and_gantt_colo
         if phases:
             assert "gantt_color_hex" in phases[0]
         assert migrated.fetch_category_folders() == []
+        migrated.conn.row_factory = sqlite3.Row
+        folder_columns = {
+            str(row["name"])
+            for row in migrated.conn.execute("PRAGMA table_info(category_folders);").fetchall()
+        }
+        assert "text_color_hex" in folder_columns
     finally:
         migrated.close()

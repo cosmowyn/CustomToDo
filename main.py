@@ -5110,6 +5110,7 @@ class MainWindow(QMainWindow):
                     str(payload.get("name") or ""),
                     parent_folder_id,
                     color_hex=payload.get("color_hex"),
+                    text_color_hex=payload.get("text_color_hex"),
                     icon_name=payload.get("icon_name"),
                     identifier=payload.get("identifier"),
                 )
