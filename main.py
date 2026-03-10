@@ -1307,6 +1307,15 @@ class MainWindow(QMainWindow):
         self.project_panel.timelineTaskMoveRelativeRequested.connect(
             self._move_selected_task_from_timeline
         )
+        self.project_panel.timelineTaskMoveToPreviousParentRequested.connect(
+            self._move_selected_task_to_previous_parent_context_from_timeline
+        )
+        self.project_panel.timelineTaskMoveToNextParentRequested.connect(
+            self._move_selected_task_to_next_parent_context_from_timeline
+        )
+        self.project_panel.timelineTaskMakeIndependentRequested.connect(
+            self._make_selected_task_independent_from_timeline
+        )
 
         self.project_dock = QDockWidget("Project cockpit", self)
         self.project_dock.setObjectName("ProjectCockpitDock")
@@ -5182,6 +5191,37 @@ class MainWindow(QMainWindow):
                 lambda _checked=False, folder_id=int(row.get("id")): self._assign_selected_tasks_to_category(folder_id)
             )
 
+    def _add_hierarchy_context_actions(
+        self,
+        menu: QMenu,
+        task_id: int,
+    ) -> None:
+        tid = int(task_id or 0)
+        if tid <= 0:
+            return
+        previous_parent_act = QAction("Move subtree to previous parent", menu)
+        previous_parent_act.setEnabled(
+            self.model.can_move_task_to_previous_parent_context(tid)
+        )
+        previous_parent_act.triggered.connect(
+            lambda: self._move_task_to_previous_parent_context(tid)
+        )
+        next_parent_act = QAction("Move subtree to next parent", menu)
+        next_parent_act.setEnabled(
+            self.model.can_move_task_to_next_parent_context(tid)
+        )
+        next_parent_act.triggered.connect(
+            lambda: self._move_task_to_next_parent_context(tid)
+        )
+        independent_act = QAction("Make subtree independent", menu)
+        independent_act.setEnabled(self.model.can_make_task_independent(tid))
+        independent_act.triggered.connect(
+            lambda: self._make_task_independent(tid)
+        )
+        menu.addAction(previous_parent_act)
+        menu.addAction(next_parent_act)
+        menu.addAction(independent_act)
+
     def _open_context_menu(self, pos):
         index = self.view.indexAt(pos)
         menu = QMenu(self)
@@ -5244,6 +5284,11 @@ class MainWindow(QMainWindow):
         duplicate_sub = QAction("Duplicate with children", self)
         duplicate_sub.triggered.connect(self._duplicate_selected_subtree)
         menu.addAction(duplicate_sub)
+
+        menu.addSeparator()
+        self._add_hierarchy_context_actions(menu, int(task_id))
+
+        menu.addSeparator()
 
         archive_act = QAction("Archive", self)
         archive_act.triggered.connect(self._archive_selected)
@@ -5546,6 +5591,21 @@ class MainWindow(QMainWindow):
             )
             self._focus_task_by_id(tid)
 
+    def _move_selected_task_to_previous_parent_context_from_timeline(
+        self,
+        task_id: int,
+    ) -> None:
+        self._move_task_to_previous_parent_context(int(task_id or 0))
+
+    def _move_selected_task_to_next_parent_context_from_timeline(
+        self,
+        task_id: int,
+    ) -> None:
+        self._move_task_to_next_parent_context(int(task_id or 0))
+
+    def _make_selected_task_independent_from_timeline(self, task_id: int) -> None:
+        self._make_task_independent(int(task_id or 0))
+
     def _project_panel_edit_task_dependencies(self, task_id: int, dependency_ids: list):
         try:
             self.model.set_task_dependencies(int(task_id), [int(x) for x in dependency_ids or []])
@@ -5724,6 +5784,66 @@ class MainWindow(QMainWindow):
         if self.model.move_task_relative(int(tid), int(delta)):
             self._focus_task_by_id(int(tid))
             self._schedule_row_action_button_update()
+
+    def _move_task_to_previous_parent_context(self, task_id: int) -> None:
+        tid = int(task_id or 0)
+        if tid <= 0:
+            return
+        if self.model.move_task_to_previous_parent_context(tid):
+            log_event(
+                "Task subtree moved to previous parent",
+                context="tasks.hierarchy",
+                db_path=self.db.path,
+                details={"task_id": tid, "mode": "previous_parent"},
+            )
+            self._focus_task_by_id(tid)
+            self._schedule_row_action_button_update()
+
+    def _move_task_to_next_parent_context(self, task_id: int) -> None:
+        tid = int(task_id or 0)
+        if tid <= 0:
+            return
+        if self.model.move_task_to_next_parent_context(tid):
+            log_event(
+                "Task subtree moved to next parent",
+                context="tasks.hierarchy",
+                db_path=self.db.path,
+                details={"task_id": tid, "mode": "next_parent"},
+            )
+            self._focus_task_by_id(tid)
+            self._schedule_row_action_button_update()
+
+    def _make_task_independent(self, task_id: int) -> None:
+        tid = int(task_id or 0)
+        if tid <= 0:
+            return
+        if self.model.make_task_independent(tid):
+            log_event(
+                "Task subtree made independent",
+                context="tasks.hierarchy",
+                db_path=self.db.path,
+                details={"task_id": tid, "mode": "make_independent"},
+            )
+            self._focus_task_by_id(tid)
+            self._schedule_row_action_button_update()
+
+    def _move_selected_to_previous_parent_context(self) -> None:
+        tid = self._selected_task_id()
+        if tid is None:
+            return
+        self._move_task_to_previous_parent_context(int(tid))
+
+    def _move_selected_to_next_parent_context(self) -> None:
+        tid = self._selected_task_id()
+        if tid is None:
+            return
+        self._move_task_to_next_parent_context(int(tid))
+
+    def _make_selected_independent(self) -> None:
+        tid = self._selected_task_id()
+        if tid is None:
+            return
+        self._make_task_independent(int(tid))
 
     def _duplicate_selected(self):
         tid = self._selected_task_id()

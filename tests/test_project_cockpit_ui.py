@@ -890,8 +890,48 @@ def test_gantt_tree_context_menu_matches_chart_move_actions(qapp):
 
     assert "Move up among siblings" in chart_actions
     assert "Move down among siblings" in chart_actions
+    assert "Move subtree to previous parent" in chart_actions
+    assert "Move subtree to next parent" in chart_actions
+    assert "Make subtree independent" in chart_actions
     assert "Move up among siblings" in tree_actions
     assert "Move down among siblings" in tree_actions
+    assert "Move subtree to previous parent" in tree_actions
+    assert "Move subtree to next parent" in tree_actions
+    assert "Make subtree independent" in tree_actions
+
+
+def test_gantt_chart_and_tree_context_menus_emit_same_parent_context_actions(qapp):
+    widget = ProjectGanttView()
+    widget.resize(1100, 480)
+    widget.set_dashboard(_dashboard_with_reorderable_phase_siblings())
+    widget.show()
+    qapp.processEvents()
+
+    previous_parent_emits: list[int] = []
+    widget.taskMoveToPreviousParentRequested.connect(previous_parent_emits.append)
+
+    row = widget.row_lookup["task:7"]
+    chart_menu = widget._build_context_menu_for_row(row, date(2026, 3, 11))
+    chart_prev = next(
+        action
+        for action in chart_menu.actions()
+        if action.text() == "Move subtree to previous parent"
+    )
+    assert chart_prev.isEnabled() is True
+    chart_prev.trigger()
+
+    item = widget.item_lookup["task:7"]
+    rect = widget.tree.visualItemRect(item)
+    tree_menu = widget.build_tree_context_menu(rect.center())
+    tree_prev = next(
+        action
+        for action in tree_menu.actions()
+        if action.text() == "Move subtree to previous parent"
+    )
+    assert tree_prev.isEnabled() is True
+    tree_prev.trigger()
+
+    assert previous_parent_emits == [7, 7]
 
 
 def test_gantt_view_milestone_and_deliverable_creation_emit_payloads(qapp):

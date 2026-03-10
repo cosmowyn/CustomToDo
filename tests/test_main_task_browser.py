@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QImage, QPainter
-from PySide6.QtWidgets import QHeaderView, QStyle, QStyleOptionViewItem
+from PySide6.QtWidgets import QHeaderView, QMenu, QStyle, QStyleOptionViewItem
 
 import main as main_module
 from db import Database
@@ -241,6 +241,43 @@ def test_semantic_row_coloring_is_limited_to_first_visible_cell(
 
         assert desc_img_reordered.pixelColor(2, 21) == desc_img_reordered.pixelColor(60, 21)
         assert due_img_reordered.pixelColor(2, 21) != due_img_reordered.pixelColor(60, 21)
+    finally:
+        window.close()
+        qapp.processEvents()
+
+
+def test_task_tree_context_menu_exposes_subtree_parent_context_actions(
+    tmp_path,
+    qapp,
+    monkeypatch,
+):
+    window = _build_window(tmp_path, qapp, monkeypatch)
+    try:
+        assert window.model.add_task_with_values("Project A")
+        project_id = int(window.model.last_added_task_id())
+        assert window.model.add_task_with_values("Phase A", parent_id=project_id)
+        phase_a = int(window.model.last_added_task_id())
+        assert window.model.add_task_with_values("A child", parent_id=phase_a)
+        assert window.model.add_task_with_values("Phase B", parent_id=project_id)
+
+        window._focus_task_by_id(phase_a)
+        qapp.processEvents()
+
+        captured_actions: list[str] = []
+
+        def fake_exec(self, *_args, **_kwargs):
+            captured_actions[:] = [action.text() for action in self.actions()]
+            return None
+
+        monkeypatch.setattr(QMenu, "exec", fake_exec)
+
+        index = window.view.currentIndex()
+        rect = window.view.visualRect(index)
+        window._open_context_menu(rect.center())
+
+        assert "Move subtree to previous parent" in captured_actions
+        assert "Move subtree to next parent" in captured_actions
+        assert "Make subtree independent" in captured_actions
     finally:
         window.close()
         qapp.processEvents()

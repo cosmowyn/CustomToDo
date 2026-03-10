@@ -390,6 +390,66 @@ def test_project_timeline_vertical_reorder_updates_task_tree_and_undo(
         qapp.processEvents()
 
 
+def test_subtree_parent_context_moves_stay_synchronized_across_tree_and_timeline(
+    tmp_path,
+    qapp,
+    monkeypatch,
+):
+    window = _build_window(tmp_path, qapp, monkeypatch)
+    try:
+        assert window.model.add_task_with_values("Project A")
+        project_id = int(window.model.last_added_task_id())
+        window.model.set_task_start_date(project_id, "2026-03-10")
+        window.model.set_task_due_date(project_id, "2026-03-30")
+
+        assert window.model.add_task_with_values("Phase A", parent_id=project_id)
+        phase_a = int(window.model.last_added_task_id())
+        window.model.set_task_start_date(phase_a, "2026-03-11")
+        window.model.set_task_due_date(phase_a, "2026-03-14")
+
+        assert window.model.add_task_with_values("A child", parent_id=phase_a)
+        child_a = int(window.model.last_added_task_id())
+        window.model.set_task_start_date(child_a, "2026-03-12")
+        window.model.set_task_due_date(child_a, "2026-03-13")
+
+        assert window.model.add_task_with_values("Phase B", parent_id=project_id)
+        phase_b = int(window.model.last_added_task_id())
+        window.model.set_task_start_date(phase_b, "2026-03-15")
+        window.model.set_task_due_date(phase_b, "2026-03-18")
+
+        window.project_dock.show()
+        window._focus_task_by_id(phase_a)
+        window.project_panel.tabs.setCurrentWidget(window.project_panel.timeline_tab_page)
+        qapp.processEvents()
+
+        window._move_selected_to_next_parent_context()
+        qapp.processEvents()
+
+        assert window.db.fetch_task_by_id(phase_a)["parent_id"] == phase_b
+        assert window.db.fetch_task_by_id(child_a)["parent_id"] == phase_a
+        assert window._selected_task_id() == phase_a
+        assert window.project_panel.timeline_widget.selected_uid == f"task:{phase_a}"
+
+        window._make_selected_independent()
+        qapp.processEvents()
+
+        assert window.db.fetch_task_by_id(phase_a)["parent_id"] == project_id
+        assert window.db.fetch_task_by_id(child_a)["parent_id"] == phase_a
+        assert window._selected_task_id() == phase_a
+        assert window.project_panel.timeline_widget.selected_uid == f"task:{phase_a}"
+
+        window.model.undo_stack.undo()
+        qapp.processEvents()
+        assert window.db.fetch_task_by_id(phase_a)["parent_id"] == phase_b
+
+        window.model.undo_stack.redo()
+        qapp.processEvents()
+        assert window.db.fetch_task_by_id(phase_a)["parent_id"] == project_id
+    finally:
+        window.close()
+        qapp.processEvents()
+
+
 def test_details_auto_save_on_selection_change_preserves_new_focus(
     tmp_path,
     qapp,

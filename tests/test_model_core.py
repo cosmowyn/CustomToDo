@@ -58,6 +58,51 @@ def test_model_dragdrop_delete_and_undo_redo(tmp_path, qapp):
     assert model.node_for_id(bravo_id) is None
 
 
+def test_model_subtree_parent_context_moves_and_independence_preserve_structure(
+    tmp_path,
+    qapp,
+):
+    db = Database(str(tmp_path / "hierarchy-moves.sqlite3"))
+    model = TaskTreeModel(db)
+
+    assert model.add_task_with_values("Project")
+    project_id = model.last_added_task_id()
+    assert model.add_task_with_values("Phase A", parent_id=project_id)
+    phase_a = model.last_added_task_id()
+    assert model.add_task_with_values("A child", parent_id=phase_a)
+    child_a = model.last_added_task_id()
+    assert model.add_task_with_values("Phase B", parent_id=project_id)
+    phase_b = model.last_added_task_id()
+    assert model.add_task_with_values("Other top-level root")
+    unrelated_root = model.last_added_task_id()
+
+    assert model.can_move_task_to_next_parent_context(phase_a) is True
+    assert model.can_move_task_to_previous_parent_context(phase_a) is False
+    assert model.can_make_task_independent(phase_a) is False
+    assert model.can_move_task_to_previous_parent_context(project_id) is False
+    assert model.can_move_task_to_next_parent_context(unrelated_root) is False
+
+    assert model.move_task_to_next_parent_context(phase_a) is True
+    assert db.fetch_task_by_id(phase_a)["parent_id"] == phase_b
+    assert db.fetch_task_by_id(child_a)["parent_id"] == phase_a
+    assert model.sibling_order(project_id) == [phase_b]
+
+    model.undo_stack.undo()
+    assert db.fetch_task_by_id(phase_a)["parent_id"] == project_id
+    assert db.fetch_task_by_id(child_a)["parent_id"] == phase_a
+    assert model.sibling_order(project_id) == [phase_a, phase_b]
+
+    model.undo_stack.redo()
+    assert db.fetch_task_by_id(phase_a)["parent_id"] == phase_b
+    assert db.fetch_task_by_id(child_a)["parent_id"] == phase_a
+
+    assert model.can_make_task_independent(phase_a) is True
+    assert model.make_task_independent(phase_a) is True
+    assert db.fetch_task_by_id(phase_a)["parent_id"] == project_id
+    assert db.fetch_task_by_id(child_a)["parent_id"] == phase_a
+    assert model.sibling_order(project_id) == [phase_b, phase_a]
+
+
 def test_model_custom_column_date_and_collapse_persistence(tmp_path, qapp):
     db = Database(str(tmp_path / "tasks.sqlite3"))
     model = TaskTreeModel(db)

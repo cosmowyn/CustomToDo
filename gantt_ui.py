@@ -1033,6 +1033,9 @@ class ProjectGanttView(QWidget):
     deliverableCreateRequested = Signal(object)
     taskMoveRelativeRequested = Signal(int, int)
     taskMoveRequested = Signal(int, object, int)
+    taskMoveToPreviousParentRequested = Signal(int)
+    taskMoveToNextParentRequested = Signal(int)
+    taskMakeIndependentRequested = Signal(int)
     archiveTaskRequested = Signal(int)
     deleteTaskRequested = Signal(int)
     itemColorChangeRequested = Signal(str, int, object)
@@ -2108,6 +2111,73 @@ class ProjectGanttView(QWidget):
             return False
         return bool(row.get("reorderable")) and int(row.get("item_id") or 0) > 0
 
+    def _row_parent(self, row: dict | None) -> dict | None:
+        if not isinstance(row, dict):
+            return None
+        parent_uid = str(row.get("parent_uid") or "").strip()
+        if not parent_uid:
+            return None
+        return self.row_lookup.get(parent_uid)
+
+    def _row_task_siblings(self, row: dict | None) -> list[dict]:
+        if not self.row_is_reorderable(row or {}):
+            return []
+        parent_uid = str((row or {}).get("parent_uid") or "")
+        siblings = [
+            candidate
+            for candidate in self.rows
+            if str(candidate.get("kind") or "").strip().lower() == "task"
+            and str(candidate.get("parent_uid") or "") == parent_uid
+            and int(candidate.get("item_id") or 0) > 0
+        ]
+        siblings.sort(
+            key=lambda candidate: (
+                int(candidate.get("sort_index") or 0),
+                int(candidate.get("item_id") or 0),
+            )
+        )
+        return siblings
+
+    def _row_previous_task_sibling(self, row: dict | None) -> dict | None:
+        if not self.row_is_reorderable(row or {}):
+            return None
+        siblings = self._row_task_siblings(row)
+        current_id = int((row or {}).get("item_id") or 0)
+        previous = None
+        for candidate in siblings:
+            if int(candidate.get("item_id") or 0) == current_id:
+                return previous
+            previous = candidate
+        return None
+
+    def _row_next_task_sibling(self, row: dict | None) -> dict | None:
+        if not self.row_is_reorderable(row or {}):
+            return None
+        siblings = self._row_task_siblings(row)
+        current_id = int((row or {}).get("item_id") or 0)
+        seen_current = False
+        for candidate in siblings:
+            if seen_current:
+                return candidate
+            if int(candidate.get("item_id") or 0) == current_id:
+                seen_current = True
+        return None
+
+    def row_can_move_to_previous_parent_context(self, row: dict | None) -> bool:
+        return self._row_previous_task_sibling(row) is not None and self._row_parent(row) is not None
+
+    def row_can_move_to_next_parent_context(self, row: dict | None) -> bool:
+        return self._row_next_task_sibling(row) is not None and self._row_parent(row) is not None
+
+    def row_can_make_independent(self, row: dict | None) -> bool:
+        parent_row = self._row_parent(row)
+        if parent_row is None:
+            return False
+        if str(parent_row.get("kind") or "").strip().lower() != "task":
+            return False
+        grandparent_row = self._row_parent(parent_row)
+        return grandparent_row is not None
+
     def _task_rows_for_actual_parent(self, parent_id) -> list[dict]:
         rows = [
             row
@@ -2608,6 +2678,36 @@ class ProjectGanttView(QWidget):
             )
             menu.addAction(move_up_action)
             menu.addAction(move_down_action)
+
+            menu.addSeparator()
+            prev_parent_action = QAction("Move subtree to previous parent", menu)
+            prev_parent_action.setEnabled(
+                self.row_can_move_to_previous_parent_context(row)
+            )
+            prev_parent_action.triggered.connect(
+                lambda: self.taskMoveToPreviousParentRequested.emit(
+                    int(row.get("item_id") or 0)
+                )
+            )
+            next_parent_action = QAction("Move subtree to next parent", menu)
+            next_parent_action.setEnabled(
+                self.row_can_move_to_next_parent_context(row)
+            )
+            next_parent_action.triggered.connect(
+                lambda: self.taskMoveToNextParentRequested.emit(
+                    int(row.get("item_id") or 0)
+                )
+            )
+            independent_action = QAction("Make subtree independent", menu)
+            independent_action.setEnabled(self.row_can_make_independent(row))
+            independent_action.triggered.connect(
+                lambda: self.taskMakeIndependentRequested.emit(
+                    int(row.get("item_id") or 0)
+                )
+            )
+            menu.addAction(prev_parent_action)
+            menu.addAction(next_parent_action)
+            menu.addAction(independent_action)
 
         return menu
 

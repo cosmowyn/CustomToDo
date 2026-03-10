@@ -1677,6 +1677,132 @@ class TaskTreeModel(QAbstractItemModel):
         )
         return True
 
+    def _top_level_task_ancestor(self, node: _Node | None) -> _Node | None:
+        cur = node
+        if cur is None or not cur.task:
+            return None
+        while cur.parent and cur.parent != self.root and cur.parent.task:
+            cur = cur.parent
+        return cur if cur.task else None
+
+    def _previous_task_sibling(self, node: _Node | None) -> _Node | None:
+        if node is None or node.parent is None:
+            return None
+        siblings = node.parent.children
+        try:
+            index = siblings.index(node)
+        except ValueError:
+            return None
+        for sibling in reversed(siblings[:index]):
+            if sibling.task:
+                return sibling
+        return None
+
+    def _next_task_sibling(self, node: _Node | None) -> _Node | None:
+        if node is None or node.parent is None:
+            return None
+        siblings = node.parent.children
+        try:
+            index = siblings.index(node)
+        except ValueError:
+            return None
+        for sibling in siblings[index + 1:]:
+            if sibling.task:
+                return sibling
+        return None
+
+    def _can_move_subtree_into_parent_context(
+        self,
+        node: _Node | None,
+        candidate_parent: _Node | None,
+    ) -> bool:
+        if node is None or not node.task or node.parent is None:
+            return False
+        if candidate_parent is None or not candidate_parent.task:
+            return False
+        if node.parent == self.root or node.parent.folder:
+            return False
+        boundary_root = self._top_level_task_ancestor(node)
+        candidate_boundary = self._top_level_task_ancestor(candidate_parent)
+        if boundary_root is None or candidate_boundary is None:
+            return False
+        if boundary_root is not candidate_boundary:
+            return False
+        if candidate_parent is node:
+            return False
+        if not self._can_place_subtree_under_parent(node, candidate_parent):
+            return False
+        return True
+
+    def can_move_task_to_previous_parent_context(self, task_id: int) -> bool:
+        node = self.node_for_id(int(task_id))
+        return self._can_move_subtree_into_parent_context(
+            node,
+            self._previous_task_sibling(node),
+        )
+
+    def can_move_task_to_next_parent_context(self, task_id: int) -> bool:
+        node = self.node_for_id(int(task_id))
+        return self._can_move_subtree_into_parent_context(
+            node,
+            self._next_task_sibling(node),
+        )
+
+    def can_make_task_independent(self, task_id: int) -> bool:
+        node = self.node_for_id(int(task_id))
+        if node is None or not node.task or node.parent is None or node.parent == self.root:
+            return False
+        parent_node = node.parent
+        if not parent_node.task or parent_node.parent is None:
+            return False
+        new_parent_node = parent_node.parent
+        if new_parent_node == self.root or new_parent_node.folder or not new_parent_node.task:
+            return False
+        boundary_root = self._top_level_task_ancestor(node)
+        candidate_boundary = self._top_level_task_ancestor(new_parent_node)
+        if boundary_root is None or candidate_boundary is None:
+            return False
+        if boundary_root is not candidate_boundary:
+            return False
+        return self._can_place_subtree_under_parent(node, new_parent_node)
+
+    def move_task_to_previous_parent_context(self, task_id: int) -> bool:
+        node = self.node_for_id(int(task_id))
+        candidate_parent = self._previous_task_sibling(node)
+        if not self._can_move_subtree_into_parent_context(node, candidate_parent):
+            return False
+        return self.move_task_to_row(
+            int(task_id),
+            int(candidate_parent.task["id"]),
+            len(candidate_parent.children),
+        )
+
+    def move_task_to_next_parent_context(self, task_id: int) -> bool:
+        node = self.node_for_id(int(task_id))
+        candidate_parent = self._next_task_sibling(node)
+        if not self._can_move_subtree_into_parent_context(node, candidate_parent):
+            return False
+        return self.move_task_to_row(
+            int(task_id),
+            int(candidate_parent.task["id"]),
+            0,
+        )
+
+    def make_task_independent(self, task_id: int) -> bool:
+        node = self.node_for_id(int(task_id))
+        if not self.can_make_task_independent(int(task_id)) or node is None or node.parent is None:
+            return False
+        parent_node = node.parent
+        new_parent_node = parent_node.parent
+        if new_parent_node is None or not new_parent_node.task:
+            return False
+        new_row = self._row_in_parent(parent_node) + 1
+        return self.move_task_to_row(
+            int(task_id),
+            int(new_parent_node.task["id"]),
+            new_row,
+        )
+
     def duplicate_task(self, task_id: int, include_children: bool = False) -> int | None:
         node = self.node_for_id(int(task_id))
         if not node or not node.task:

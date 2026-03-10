@@ -540,6 +540,9 @@ class ProjectCockpitPanel(QWidget):
     editMilestoneDependenciesRequested = Signal(int, list)
     timelineTaskMoveRelativeRequested = Signal(int, int)
     timelineTaskMoveRequested = Signal(int, object, int)
+    timelineTaskMoveToPreviousParentRequested = Signal(int)
+    timelineTaskMoveToNextParentRequested = Signal(int)
+    timelineTaskMakeIndependentRequested = Signal(int)
     timelineItemColorRequested = Signal(str, int, object)
     timelineItemColorResetRequested = Signal(str, int)
 
@@ -1005,6 +1008,15 @@ class ProjectCockpitPanel(QWidget):
         self.timeline_widget.taskMoveRequested.connect(self.timelineTaskMoveRequested.emit)
         self.timeline_widget.taskMoveRelativeRequested.connect(
             self.timelineTaskMoveRelativeRequested.emit
+        )
+        self.timeline_widget.taskMoveToPreviousParentRequested.connect(
+            self.timelineTaskMoveToPreviousParentRequested.emit
+        )
+        self.timeline_widget.taskMoveToNextParentRequested.connect(
+            self.timelineTaskMoveToNextParentRequested.emit
+        )
+        self.timeline_widget.taskMakeIndependentRequested.connect(
+            self.timelineTaskMakeIndependentRequested.emit
         )
         self.timeline_widget.itemColorChangeRequested.connect(
             self.timelineItemColorRequested.emit
