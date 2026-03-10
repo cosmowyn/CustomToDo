@@ -942,6 +942,10 @@ class TimelineBarItem(QGraphicsItem):
         text_color = self.owner.bar_text_color_for_row(row)
         style = str(row.get("render_style") or "task")
         is_selected = self.owner.selected_uid == self.uid
+        baseline = _ensure_date(str(row.get("baseline_date") or None))
+        baseline_x = None
+        if baseline is not None and self.owner.range_start is not None:
+            baseline_x = self.owner.date_to_scene_x(baseline)
 
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setPen(QPen(border, 1.6 if style == "summary" and not is_selected else 1.4 if not is_selected else 2.2))
@@ -959,6 +963,12 @@ class TimelineBarItem(QGraphicsItem):
                 ]
             )
             painter.drawPolygon(diamond)
+            if baseline_x is not None:
+                painter.setPen(QPen(QColor("#111827"), 2))
+                painter.drawLine(
+                    QPointF(baseline_x, rect.top() - 4),
+                    QPointF(baseline_x, rect.bottom() + 4),
+                )
             label_rect = self._milestone_label_rect()
             if not label_rect.isEmpty():
                 self._draw_external_label_chip(
@@ -999,9 +1009,7 @@ class TimelineBarItem(QGraphicsItem):
                 painter.setPen(QPen(border, 1.4 if not is_selected else 2.2))
                 painter.setBrush(color)
 
-        baseline = _ensure_date(str(row.get("baseline_date") or None))
-        if baseline is not None and self.owner.range_start is not None:
-            baseline_x = self.owner.date_to_scene_x(baseline)
+        if baseline_x is not None and style != "milestone":
             painter.setPen(QPen(QColor("#111827"), 2))
             painter.drawLine(
                 QPointF(baseline_x, rect.top() - 4),

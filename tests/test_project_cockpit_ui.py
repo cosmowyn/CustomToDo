@@ -4,7 +4,15 @@ from datetime import date
 from unittest.mock import patch
 
 from PySide6.QtCore import QPoint, QPointF, QSettings, Qt
-from PySide6.QtGui import QFontMetrics, QNativeGestureEvent, QPointingDevice, QWheelEvent
+from PySide6.QtGui import (
+    QColor,
+    QFontMetrics,
+    QImage,
+    QNativeGestureEvent,
+    QPainter,
+    QPointingDevice,
+    QWheelEvent,
+)
 
 from gantt_ui import (
     CHART_LEFT_MARGIN,
@@ -324,6 +332,47 @@ def test_gantt_view_milestone_bounds_include_label_and_toolbar_controls_fit_text
         assert button.minimumWidth() >= expected
 
     assert widget.summary_label.minimumWidth() >= 260
+
+
+def test_gantt_view_milestone_label_chip_paints_over_baseline_marker(qapp):
+    widget = ProjectGanttView()
+    widget.resize(1100, 480)
+    widget.set_dashboard(_sample_dashboard())
+    widget.show()
+    qapp.processEvents()
+
+    row = widget.row_lookup["milestone:5"]
+    row["label"] = " "
+    item = widget.bar_items["milestone:5"]
+    label_rect = item._milestone_label_rect()
+
+    chosen_date = None
+    for day in range(0, 15):
+        candidate = date(2026, 3, 10 + day)
+        baseline_x = widget.date_to_scene_x(candidate)
+        if label_rect.left() + 6.0 <= baseline_x <= label_rect.right() - 6.0:
+            chosen_date = candidate
+            break
+    assert chosen_date is not None
+    row["baseline_date"] = chosen_date.isoformat()
+
+    bounds = item.boundingRect()
+    image = QImage(
+        int(bounds.width()) + 8,
+        int(bounds.height()) + 8,
+        QImage.Format.Format_ARGB32,
+    )
+    fill = widget.palette().base().color()
+    image.fill(fill)
+    painter = QPainter(image)
+    painter.translate(-bounds.left() + 4.0, -bounds.top() + 4.0)
+    item.paint(painter, None)
+    painter.end()
+
+    sample_x = int(round(widget.date_to_scene_x(chosen_date) - bounds.left() + 4.0))
+    sample_y = int(round(label_rect.center().y() - bounds.top() + 4.0))
+    sampled = image.pixelColor(sample_x, sample_y)
+    assert sampled != QColor("#111827")
 
 
 def test_gantt_context_menu_emits_item_color_actions(qapp):
