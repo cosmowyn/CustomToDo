@@ -8,6 +8,7 @@ The format is inspired by Keep a Changelog and uses straightforward dated entrie
 
 ### Fixed
 - Windows build helper now prefers the active virtualenv interpreter, recognizes a repo-root `icon.ico`, and can generate a Windows `.ico` from `icon.png` so PyInstaller packaging and runtime window icons stay aligned
+- Windows build helper now verifies `PyInstaller` through the same interpreter that launched `buildfile.py`, uses absolute asset paths, and prints interpreter diagnostics before building
 
 ### Added
 

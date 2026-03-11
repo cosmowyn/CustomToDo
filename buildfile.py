@@ -30,7 +30,6 @@ from app_metadata import APP_NAME, APP_VERSION
 
 ENTRY_SCRIPT = "main.py"
 VENV_DIR = ".venv"
-PYTHON_ENV_VAR = "GRIDORYN_PYTHON"
 ICON_ENV_VAR = "GRIDORYN_ICON"
 SPLASH_ENV_VAR = "GRIDORYN_SPLASH"
 
@@ -55,102 +54,47 @@ def _release_basename() -> str:
     return f"{APP_NAME}-{APP_VERSION}-{_platform_tag()}"
 
 
-def _venv_python(venv_dir: Path) -> Path:
-    if _is_windows():
-        return venv_dir / "Scripts" / "python.exe"
-    return venv_dir / "bin" / "python"
+def _resolve_build_python() -> Path:
+    build_python = Path(sys.executable).resolve()
+    if not build_python.exists():
+        raise FileNotFoundError(
+            f"Current Python interpreter does not exist:\n  {build_python}"
+        )
+    return build_python
 
 
-def _active_venv_python() -> Path | None:
-    exe = Path(sys.executable).resolve()
-    if not exe.exists():
-        return None
-    if sys.prefix != getattr(sys, "base_prefix", sys.prefix):
-        return exe
-    virtual_env = os.getenv("VIRTUAL_ENV", "").strip()
-    if virtual_env:
-        try:
-            venv_root = Path(virtual_env).resolve()
-            if exe.is_relative_to(venv_root):
-                return exe
-        except Exception:
-            pass
-    return None
+def _print_build_diagnostics(project_root: Path, build_python: Path) -> None:
+    print(f"Build Python: {build_python}")
+    print(f"sys.executable: {sys.executable}")
+    print(f"sys.version: {sys.version.replace(chr(10), ' ')}")
+    print(f"Current working directory: {Path.cwd().resolve()}")
+    print(f"Project root: {project_root}")
 
 
-def _resolve_build_python(project_root: Path) -> Path:
-    env_python = os.getenv(PYTHON_ENV_VAR, "").strip()
-    if env_python:
-        candidate = Path(env_python).expanduser().resolve()
-        if not candidate.exists():
-            raise FileNotFoundError(
-                f"{PYTHON_ENV_VAR} points to a missing Python executable:\n  {candidate}"
-            )
-        return candidate
-
-    active_python = _active_venv_python()
-    if active_python is not None:
-        return active_python
-
-    venv = (project_root / VENV_DIR).resolve()
-    py = _venv_python(venv)
-    if py.exists():
-        return py
-
-    raise FileNotFoundError(
-        f"Could not find virtualenv Python at:\n  {py}\n"
-        f"Activate your venv before running buildfile.py, set {PYTHON_ENV_VAR}, "
-        f"or ensure '{VENV_DIR}' exists in the project root."
+def _verify_pyinstaller(build_python: Path) -> None:
+    result = subprocess.run(
+        [str(build_python), "-m", "PyInstaller", "--version"],
+        capture_output=True,
+        text=True,
     )
+    if result.returncode == 0:
+        version_text = (result.stdout or result.stderr or "").strip()
+        if version_text:
+            print(f"PyInstaller version: {version_text}")
+        return
 
-
-def _ensure_pyinstaller(venv_python: Path) -> None:
-    try:
-        subprocess.run(
-            [
-                str(venv_python),
-                "-c",
-                (
-                    "import PyInstaller, sys; "
-                    "print('PyInstaller OK', PyInstaller.__version__, "
-                    "sys.executable)"
-                ),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except Exception:
-        print(
-            "PyInstaller not importable in the selected build interpreter. "
-            f"Attempting install into:\n  {venv_python}"
-        )
-        subprocess.run(
-            [
-                str(venv_python),
-                "-m",
-                "pip",
-                "install",
-                "-U",
-                "pyinstaller",
-                "pyinstaller-hooks-contrib",
-            ],
-            check=True,
-        )
-        subprocess.run(
-            [
-                str(venv_python),
-                "-c",
-                (
-                    "import PyInstaller, sys; "
-                    "print('PyInstaller OK', PyInstaller.__version__, "
-                    "sys.executable)"
-                ),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+    print("ERROR: PyInstaller is not available in the current build interpreter.")
+    print(f"Interpreter: {build_python}")
+    if result.stdout:
+        print("\nPyInstaller stdout:")
+        print(result.stdout)
+    if result.stderr:
+        print("\nPyInstaller stderr:")
+        print(result.stderr)
+    raise RuntimeError(
+        "PyInstaller check failed. Install PyInstaller into the same interpreter "
+        "that is running buildfile.py."
+    )
 
 
 def _write_release_manifest(
@@ -411,14 +355,14 @@ def _resolve_splash(project_root: Path) -> str | None:
 
 
 def _pyinstaller_cmd(
-    venv_python: Path,
+    build_python: Path,
     entry_script: Path,
     app_name: str,
     splash: str | None,
     icon: str | None,
 ) -> list[str]:
     cmd = [
-        str(venv_python),
+        str(build_python),
         "-m",
         "PyInstaller",
         str(entry_script),
@@ -462,11 +406,16 @@ def main() -> int:
         print(f"ERROR: entry script not found: {entry_script}")
         return 1
 
+    os.chdir(project_root)
     print(f"OS: {platform.system()}  |  Project: {project_root}")
 
-    venv_python = _resolve_build_python(project_root)
-    print(f"Using build Python: {venv_python}")
-    _ensure_pyinstaller(venv_python)
+    build_python = _resolve_build_python()
+    _print_build_diagnostics(project_root, build_python)
+    try:
+        _verify_pyinstaller(build_python)
+    except Exception as exc:
+        print(str(exc))
+        return 1
 
     if _is_macos():
         print("Note: PyInstaller splash is skipped on macOS.")
@@ -490,7 +439,7 @@ def main() -> int:
             shutil.rmtree(path, ignore_errors=True)
 
     cmd = _pyinstaller_cmd(
-        venv_python=venv_python,
+        build_python=build_python,
         entry_script=entry_script,
         app_name=APP_NAME,
         splash=splash,
@@ -514,6 +463,7 @@ def main() -> int:
             print(result.stderr)
         if result.returncode != 0:
             print("\nBuild failed.")
+            print(f"Return code: {result.returncode}")
             return result.returncode
     except Exception as exc:
         print("\nBuild failed.")

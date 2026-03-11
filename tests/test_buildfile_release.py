@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 
 import buildfile
 from app_metadata import APP_NAME, APP_VERSION
@@ -44,22 +45,31 @@ def test_stage_release_artifact_replaces_existing_copy(tmp_path: Path):
     assert second_target.read_text(encoding="utf-8") == "second"
 
 
-def test_resolve_build_python_prefers_active_virtualenv(monkeypatch, tmp_path: Path):
+def test_resolve_build_python_uses_current_interpreter(monkeypatch, tmp_path: Path):
     active_python = tmp_path / "active-venv" / "Scripts" / "python.exe"
     active_python.parent.mkdir(parents=True)
     active_python.write_text("", encoding="utf-8")
 
-    project_root = tmp_path / "project"
-    project_root.mkdir()
-
-    monkeypatch.delenv(buildfile.PYTHON_ENV_VAR, raising=False)
-    monkeypatch.setenv("VIRTUAL_ENV", str(active_python.parent.parent))
     monkeypatch.setattr(buildfile.sys, "executable", str(active_python))
-    monkeypatch.setattr(buildfile.sys, "prefix", str(active_python.parent.parent))
-    monkeypatch.setattr(buildfile.sys, "base_prefix", str(tmp_path / "python-base"))
 
-    resolved = buildfile._resolve_build_python(project_root)
+    resolved = buildfile._resolve_build_python()
     assert resolved == active_python.resolve()
+
+
+def test_verify_pyinstaller_uses_current_interpreter(monkeypatch, tmp_path: Path):
+    active_python = tmp_path / "active-venv" / "Scripts" / "python.exe"
+    active_python.parent.mkdir(parents=True)
+    active_python.write_text("", encoding="utf-8")
+
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, stdout="6.10.0\n", stderr="")
+
+    monkeypatch.setattr(buildfile.subprocess, "run", _fake_run)
+    buildfile._verify_pyinstaller(active_python)
+    assert calls == [[str(active_python), "-m", "PyInstaller", "--version"]]
 
 
 def test_resolve_icon_accepts_repo_root_icon_ico_on_windows(monkeypatch, tmp_path: Path):
@@ -92,3 +102,38 @@ def test_resolve_icon_converts_repo_root_png_to_ico_on_windows(monkeypatch, tmp_
     assert resolved.suffix.lower() == ".ico"
     assert resolved.exists()
     assert resolved.parent == project_root / "build_assets" / "icons"
+
+
+def test_pyinstaller_cmd_uses_absolute_paths_and_windows_add_data(monkeypatch, tmp_path: Path):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    entry_script = (project_root / "main.py").resolve()
+    entry_script.write_text("print('hello')", encoding="utf-8")
+    splash = (project_root / "splash.png").resolve()
+    splash.write_text("x", encoding="utf-8")
+    icon = (project_root / "icon.ico").resolve()
+    icon.write_bytes(b"ico")
+    icons_dir = project_root / "build_assets" / "icons"
+    icons_dir.mkdir(parents=True)
+    python = (project_root / ".venv" / "Scripts" / "python.exe").resolve()
+    python.parent.mkdir(parents=True)
+    python.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(buildfile, "_is_windows", lambda: True)
+    monkeypatch.setattr(buildfile, "_is_macos", lambda: False)
+
+    cmd = buildfile._pyinstaller_cmd(
+        build_python=python,
+        entry_script=entry_script,
+        app_name=APP_NAME,
+        splash=str(splash),
+        icon=str(icon),
+    )
+
+    assert cmd[0] == str(python)
+    assert str(entry_script) in cmd
+    assert str(splash) in cmd
+    assert str(icon) in cmd
+    assert "--onefile" in cmd
+    add_data_value = cmd[cmd.index("--add-data") + 1]
+    assert add_data_value == f"{icons_dir};build_assets/icons"
