@@ -53,6 +53,7 @@ Gridoryn is not for:
 - Relationship inspector for dependencies, same-project context, and related tasks
 - Calendar / agenda view
 - Analytics dashboard for completion trends and workload warnings
+- Local reporting and export tools for timeline PDFs, filtered task-list reports, and one-page project summary sheets
 
 ### Safety and operations
 - SQLite schema migrations with validation and pre-migration backup behavior
@@ -165,6 +166,15 @@ The built-in demo now functions as a real showcase workspace rather than a tiny 
 - attachments, archive data, and workload pressure examples
 
 The demo uses fictionalized data only.
+
+## Reports and Exports
+
+Gridoryn includes a local-first reporting layer for the current working context:
+- export the current Project cockpit timeline to PDF
+- print or export the current filtered task list
+- generate a one-page project summary sheet
+
+These reports are context-aware rather than raw database dumps. Timeline export uses the current project cockpit selection, task-list reporting follows the active perspective/search/filter state, and the summary sheet uses the same project dashboard signals shown in the cockpit.
 
 ## Build and Packaging
 

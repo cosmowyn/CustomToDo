@@ -741,6 +741,32 @@ QPushButton#ContextHelpButton {
         """,
     ),
     HelpChapter(
+        anchor="reports",
+        title="Reports and Exports",
+        keywords=[
+            "report",
+            "reports",
+            "export",
+            "print",
+            "pdf",
+            "timeline export",
+            "task list report",
+            "project summary sheet",
+        ],
+        body_html="""
+        <p>Gridoryn includes a local-first reporting layer for sharing or printing what you are already looking at, without exporting raw database data.</p>
+        <ul>
+            <li>Open <strong>File &gt; Reports</strong> or <strong>Tools</strong> to access the current report actions, or use the command palette.</li>
+            <li><strong>Export current timeline to PDF</strong> uses the currently selected project context from the Project cockpit and exports the hierarchy tree plus the Gantt chart together.</li>
+            <li>The timeline export includes a compact header with the project title, visible date range, export date, and the current scope/dependency options.</li>
+            <li><strong>Current task list report</strong> uses the active tree context exactly as you see it: current perspective, search text, and filters. It can either print directly or export a PDF table.</li>
+            <li><strong>Export project summary sheet</strong> creates a one-page status sheet for the current project with charter facts, health, blockers, milestone status, and delivery highlights.</li>
+            <li>The Project cockpit also exposes <strong>Export timeline PDF</strong> and <strong>Summary sheet</strong> buttons directly in the cockpit header so you do not have to leave the planning surface.</li>
+            <li>Reports are generated locally and do not mutate the current project, task tree, or filter state.</li>
+        </ul>
+        """,
+    ),
+    HelpChapter(
         anchor="recurrence",
         title="Recurring Tasks",
         keywords=["recurrence", "daily", "weekly", "monthly", "yearly", "next occurrence"],

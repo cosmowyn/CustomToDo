@@ -16,6 +16,7 @@ The format is inspired by Keep a Changelog and uses straightforward dated entrie
 ### Added
 
 - A dedicated embedded help chapter for QSS styling, including stable internal widget selectors, syntax examples, and guidance on what can and cannot be styled through Qt stylesheets
+- A first reporting/export layer with timeline PDF export, current filtered task-list reports, and one-page project summary sheets integrated into the app menus, command palette, and project cockpit
 
 ## [2.0.0] - 2026-03-09
 

@@ -545,6 +545,8 @@ class ProjectCockpitPanel(QWidget):
     timelineTaskMakeIndependentRequested = Signal(int)
     timelineItemColorRequested = Signal(str, int, object)
     timelineItemColorResetRequested = Signal(str, int)
+    exportTimelineRequested = Signal()
+    exportSummaryRequested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -599,6 +601,16 @@ class ProjectCockpitPanel(QWidget):
             "Archive the currently selected project root task and its subtree."
         )
         nav_panel.header_actions.addWidget(self.archive_project_btn)
+        self.export_timeline_btn = QPushButton("Export timeline PDF")
+        self.export_timeline_btn.setToolTip(
+            "Export the current project timeline and hierarchy to a PDF."
+        )
+        nav_panel.header_actions.addWidget(self.export_timeline_btn)
+        self.export_summary_btn = QPushButton("Summary sheet")
+        self.export_summary_btn.setToolTip(
+            "Export a one-page project summary sheet for the current project."
+        )
+        nav_panel.header_actions.addWidget(self.export_summary_btn)
         self.delete_project_btn = QPushButton("Delete permanently")
         self.delete_project_btn.setToolTip(
             "Permanently delete the currently selected project root task and its subtree."
@@ -650,9 +662,22 @@ class ProjectCockpitPanel(QWidget):
         )
         self.tabs.currentChanged.connect(self._on_current_tab_changed)
         self.archive_project_btn.clicked.connect(self._archive_current_project)
+        self.export_timeline_btn.clicked.connect(self.exportTimelineRequested.emit)
+        self.export_summary_btn.clicked.connect(self.exportSummaryRequested.emit)
         self.delete_project_btn.clicked.connect(self._delete_current_project)
         polish_button_layouts(self)
         self._update_project_action_buttons()
+
+    def current_project_id(self) -> int | None:
+        project_id = self.project_combo.currentData()
+        if project_id is None:
+            project_id = self._current_project_id
+        if project_id is None:
+            return None
+        return int(project_id)
+
+    def current_dashboard(self) -> dict | None:
+        return self._dashboard if isinstance(self._dashboard, dict) else None
 
     def focus_target(self) -> QWidget | None:
         tab_name = str(self.tabs.tabText(self.tabs.currentIndex()) or "").strip().lower()

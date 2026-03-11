@@ -1,4 +1,5 @@
 import sys
+from copy import deepcopy
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -29,6 +30,7 @@ from app_metadata import (
     app_display_version,
 )
 from category_folders_ui import CategoryFolderDialog
+from category_folders_ui import folder_display_name
 from crash_logging import install_exception_hooks, log_event, log_exception
 from db import Database, DatabaseMigrationError
 from model import TaskTreeModel, STATUSES
@@ -67,6 +69,27 @@ from quick_capture_ui import QuickCaptureDialog
 from relationships_ui import RelationshipsPanel
 from snapshot_history_ui import SnapshotHistoryDialog
 from project_cockpit_ui import ProjectCockpitPanel
+from reporting import (
+    PdfPageOptions,
+    ProjectSummaryReport,
+    TaskListReport,
+    TaskListReportRow,
+    TimelinePdfExportOptions,
+    build_timeline_pdf_payload,
+    build_project_summary_html,
+    build_task_list_report_html,
+    estimate_widget_render_size,
+    print_html_report,
+    render_html_to_pdf,
+    render_timeline_to_pdf,
+    sanitize_filename,
+    timestamp_string,
+)
+from reporting_ui import (
+    ProjectSummaryExportDialog,
+    TaskListReportDialog,
+    TimelineExportDialog,
+)
 from project_tutorial import (
     ProjectTutorialSession,
     ProjectTutorialSnapshot,
@@ -1316,6 +1339,12 @@ class MainWindow(QMainWindow):
         self.project_panel.timelineTaskMakeIndependentRequested.connect(
             self._make_selected_task_independent_from_timeline
         )
+        self.project_panel.exportTimelineRequested.connect(
+            self._export_current_timeline_pdf
+        )
+        self.project_panel.exportSummaryRequested.connect(
+            self._export_project_summary_sheet
+        )
 
         self.project_dock = QDockWidget("Project cockpit", self)
         self.project_dock.setObjectName("ProjectCockpitDock")
@@ -2250,6 +2279,469 @@ class MainWindow(QMainWindow):
         if tid is None:
             return None
         return self.model.project_id_for_task(int(tid))
+
+    def _current_report_project_id(self) -> int | None:
+        if hasattr(self, "project_panel"):
+            try:
+                project_id = self.project_panel.current_project_id()
+            except Exception:
+                project_id = None
+            if project_id is not None:
+                return int(project_id)
+        return self._current_project_id()
+
+    def _current_report_dashboard(self) -> dict | None:
+        project_id = self._current_report_project_id()
+        if project_id is None:
+            return None
+        if hasattr(self, "project_panel"):
+            try:
+                dashboard = self.project_panel.current_dashboard()
+            except Exception:
+                dashboard = None
+            if dashboard and int(dashboard.get("project", {}).get("id") or 0) == int(project_id):
+                return dashboard
+        return self.model.fetch_project_dashboard(int(project_id))
+
+    def _task_list_context_lines(self) -> list[str]:
+        lines = [f"Perspective: {str(self.view_mode.currentText() or 'All')}"]
+        search_text = str(self.search.text() or "").strip()
+        if search_text:
+            lines.append(f"Search: {search_text}")
+        lines.append(f"Sort: {str(self.sort_mode.currentText() or 'Manual')}")
+        state = self.filter_panel.snapshot()
+        filter_bits: list[str] = []
+        statuses = [str(v) for v in (state.get("statuses") or []) if str(v).strip()]
+        if statuses:
+            filter_bits.append(f"Statuses: {', '.join(statuses)}")
+        if state.get("hide_done"):
+            filter_bits.append("Hide done")
+        if state.get("overdue_only"):
+            filter_bits.append("Overdue only")
+        if state.get("blocked_only"):
+            filter_bits.append("Blocked only")
+        if state.get("waiting_only"):
+            filter_bits.append("Waiting only")
+        if state.get("due_enabled"):
+            due_from = str(state.get("due_from") or "").strip()
+            due_to = str(state.get("due_to") or "").strip()
+            if due_from or due_to:
+                filter_bits.append(f"Due range: {due_from or '...'} -> {due_to or '...'}")
+        tags = [str(v) for v in (state.get("tags") or []) if str(v).strip()]
+        if tags:
+            filter_bits.append(f"Tags: {', '.join(tags)}")
+        pmin = state.get("priority_min")
+        pmax = state.get("priority_max")
+        if pmin not in (None, 1) or pmax not in (None, 5):
+            filter_bits.append(f"Priority: {pmin or 1} to {pmax or 5}")
+        if filter_bits:
+            lines.append("Filters: " + " | ".join(filter_bits))
+        return lines
+
+    def _build_current_task_list_report(self) -> TaskListReport:
+        project_name_cache: dict[int, str] = {}
+        folder_name_cache = {
+            int(row.get("id") or 0): folder_display_name(row)
+            for row in self.model.list_category_folders()
+            if row.get("id") is not None
+        }
+        rows: list[TaskListReportRow] = []
+
+        def project_name_for(task_id: int, task: dict) -> str:
+            project_id = self.model.project_id_for_task(int(task_id))
+            if project_id is None:
+                return ""
+            project_id = int(project_id)
+            cached = project_name_cache.get(project_id)
+            if cached is not None:
+                return cached
+            node = self.model.node_for_id(project_id)
+            name = str(node.task.get("description") or "") if node and node.task else str(task.get("description") or "")
+            project_name_cache[project_id] = name
+            return name
+
+        def category_name_for(task: dict, project_name: str) -> str:
+            folder_id = task.get("category_folder_id")
+            if folder_id is not None:
+                return str(folder_name_cache.get(int(folder_id), "") or "")
+            project_id = self.model.project_id_for_task(int(task.get("id") or 0))
+            if project_id is not None:
+                project_node = self.model.node_for_id(int(project_id))
+                if project_node and project_node.task:
+                    root_folder_id = project_node.task.get("category_folder_id")
+                    if root_folder_id is not None:
+                        return str(folder_name_cache.get(int(root_folder_id), "") or "")
+            return ""
+
+        def blocked_waiting_for(task: dict) -> str:
+            status = str(task.get("status") or "")
+            bits: list[str] = []
+            dep_count = int(task.get("dependency_count") or task.get("blocked_by_count") or 0)
+            if dep_count > 0:
+                bits.append(f"{dep_count} dep")
+            waiting_for = str(task.get("waiting_for") or "").strip()
+            if waiting_for:
+                bits.append(f"Waiting: {waiting_for}")
+            if status == "Blocked" and not waiting_for:
+                bits.append("Blocked")
+            return " | ".join(bits)
+
+        def walk(parent_proxy: QModelIndex = QModelIndex(), depth: int = 0):
+            row_count = self.proxy.rowCount(parent_proxy)
+            for row_idx in range(row_count):
+                proxy_index = self.proxy.index(row_idx, 0, parent_proxy)
+                if not proxy_index.isValid():
+                    continue
+                source_index = self.proxy.mapToSource(proxy_index)
+                if not source_index.isValid():
+                    continue
+                node = source_index.internalPointer()
+                is_folder = bool(getattr(node, "folder", None))
+                is_task = bool(getattr(node, "task", None))
+                if is_task:
+                    task = dict(node.task)
+                    task_id = int(task.get("id") or 0)
+                    project_name = project_name_for(task_id, task)
+                    rows.append(
+                        TaskListReportRow(
+                            task=("  " * max(0, depth)) + str(task.get("description") or ""),
+                            status=str(task.get("status") or ""),
+                            due_date=str(task.get("due_date") or ""),
+                            priority=str(task.get("priority") or ""),
+                            project=project_name,
+                            category=category_name_for(task, project_name),
+                            blocked_waiting=blocked_waiting_for(task),
+                        )
+                    )
+                if is_folder:
+                    if self.view.isExpanded(proxy_index):
+                        walk(proxy_index, depth)
+                    continue
+                if self.view.isExpanded(proxy_index):
+                    walk(proxy_index, depth + (1 if is_task else 0))
+
+        walk()
+        perspective = str(self.view_mode.currentText() or "All")
+        title = (
+            "Current task list"
+            if perspective.lower() == "all"
+            else f"{perspective} task list"
+        )
+        return TaskListReport(
+            title=title,
+            subtitle_lines=self._task_list_context_lines(),
+            rows=rows,
+            exported_at=timestamp_string(),
+        )
+
+    def _project_summary_sections(self, dashboard: dict, summary: dict, health: dict | None) -> list[tuple[str, list[str]]]:
+        sections: list[tuple[str, list[str]]] = []
+        next_steps: list[str] = []
+        next_milestone = summary.get("next_milestone") or {}
+        if next_milestone:
+            title = str(next_milestone.get("title") or "").strip()
+            target = str(next_milestone.get("target_date") or "").strip()
+            days = summary.get("next_milestone_days")
+            detail = title or "Next milestone"
+            if target:
+                detail += f" ({target})"
+            if days is not None:
+                detail += f" [{int(days)} day(s)]"
+            next_steps.append(detail)
+        next_action = str((health or {}).get("next_action_description") or "").strip()
+        if next_action:
+            next_steps.append(f"Next action: {next_action}")
+        reason = str(summary.get("inferred_health_reason") or "").strip()
+        if reason:
+            next_steps.append(reason)
+        if next_steps:
+            sections.append(("Next steps", next_steps))
+
+        delivery: list[str] = []
+        overdue = int(summary.get("overdue_task_count") or 0)
+        if overdue > 0:
+            delivery.append(f"Overdue open tasks: {overdue}")
+        due_soon = int(summary.get("deliverables_due_soon") or 0)
+        if due_soon > 0:
+            delivery.append(f"Deliverables due soon: {due_soon}")
+        milestone_overdue = int(summary.get("milestone_overdue_count") or 0)
+        if milestone_overdue > 0:
+            delivery.append(f"Overdue milestones: {milestone_overdue}")
+        if delivery:
+            sections.append(("Delivery", delivery))
+
+        risks: list[str] = []
+        high_risks = int(summary.get("open_risks_high") or 0)
+        if high_risks > 0:
+            risks.append(f"High-severity open risks: {high_risks}")
+        blocked = int(summary.get("blocked_task_count") or 0)
+        waiting = int(summary.get("waiting_task_count") or 0)
+        if blocked > 0 or waiting > 0:
+            risks.append(f"Blocked / waiting tasks: {blocked} blocked, {waiting} waiting")
+        register_entries = dashboard.get("register_entries") or []
+        top_issues = [
+            str(row.get("title") or "").strip()
+            for row in register_entries
+            if str(row.get("entry_type") or "") in {"risk", "issue"}
+            and str(row.get("title") or "").strip()
+        ][:3]
+        for issue in top_issues:
+            risks.append(issue)
+        if risks:
+            sections.append(("Risks and blockers", risks))
+
+        return sections
+
+    def _build_project_summary_report(self, dashboard: dict) -> ProjectSummaryReport:
+        project = dashboard.get("project") or {}
+        profile = dashboard.get("profile") or {}
+        summary = dashboard.get("summary") or {}
+        project_id = int(project.get("id") or 0)
+        health = self.model.project_health_for_task(project_id) if project_id > 0 else None
+        next_milestone = summary.get("next_milestone") or {}
+        next_milestone_label = str(next_milestone.get("title") or "").strip()
+        if next_milestone_label and next_milestone.get("target_date"):
+            next_milestone_label += f" ({str(next_milestone.get('target_date') or '')})"
+        facts = [
+            ("Project", str(project.get("description") or "")),
+            ("Objective", str(profile.get("objective") or summary.get("objective") or summary.get("summary") or "")),
+            ("Owner", str(profile.get("owner") or "")),
+            ("Category", str(profile.get("category") or "")),
+            ("Target date", str(profile.get("target_date") or "")),
+            ("Health", str(summary.get("effective_health_label") or "")),
+            ("Next milestone", next_milestone_label),
+            (
+                "Blocked / waiting",
+                f"{int(summary.get('blocked_task_count') or 0)} blocked, "
+                f"{int(summary.get('waiting_task_count') or 0)} waiting",
+            ),
+            ("Overdue open work", str(int(summary.get("overdue_task_count") or 0))),
+            (
+                "Progress summary",
+                f"{int(summary.get('active_task_count') or 0)} active tasks | "
+                f"{int(summary.get('milestone_open_count') or 0)} open milestones | "
+                f"{int(summary.get('deliverable_open_count') or 0)} open deliverables",
+            ),
+        ]
+        subtitle_lines = [
+            f"Project cockpit summary for {str(project.get('description') or '')}",
+            f"Generated from the current project context on {timestamp_string()}",
+        ]
+        return ProjectSummaryReport(
+            title=f"Project summary: {str(project.get('description') or '')}",
+            subtitle_lines=subtitle_lines,
+            exported_at=timestamp_string(),
+            facts=facts,
+            sections=self._project_summary_sections(dashboard, summary, health),
+        )
+
+    def _timeline_date_range_label(self, timeline, scope: str) -> str:
+        if scope == "visible":
+            rect = timeline.view.mapToScene(timeline.view.viewport().rect()).boundingRect()
+            start = timeline.scene_x_to_date(rect.left())
+            end = timeline.scene_x_to_date(rect.right())
+        else:
+            start = timeline.range_start
+            end = timeline.range_end
+        if start is None or end is None:
+            return "Date range unavailable"
+        return f"Range: {start.isoformat()} -> {end.isoformat()}"
+
+    def _create_timeline_export_view(
+        self,
+        dashboard: dict,
+        options: TimelinePdfExportOptions,
+    ):
+        source = (
+            self.project_panel.timeline_widget
+            if hasattr(self, "project_panel") and hasattr(self.project_panel, "timeline_widget")
+            else None
+        )
+        export_view = source.__class__() if source is not None else None
+        if export_view is None:
+            raise RuntimeError("Timeline export is unavailable.")
+        target_size = estimate_widget_render_size(
+            options,
+            subtitle_line_count=3,
+            footer_line_count=1,
+        )
+        dashboard_payload = deepcopy(dashboard)
+        if not options.include_completed:
+            filtered_rows = []
+            for row in dashboard_payload.get("timeline_rows") or []:
+                status = str(row.get("status") or "").strip().lower()
+                if status in {"done", "completed"} and str(row.get("kind") or "") != "project":
+                    continue
+                filtered_rows.append(dict(row))
+            dashboard_payload["timeline_rows"] = filtered_rows
+        export_view.pixels_per_day = (
+            source.pixels_per_day if source is not None else export_view.pixels_per_day
+        )
+        export_view._zoom_mode = getattr(source, "_zoom_mode", export_view._zoom_mode)
+        export_view._zoom_preset_key = getattr(
+            source,
+            "_zoom_preset_key",
+            export_view._zoom_preset_key,
+        )
+        if source is not None:
+            export_view._collapsed_uids = set(getattr(source, "_collapsed_uids", set()))
+        export_view.resize(
+            max(1400, target_size.width()),
+            max(760, target_size.height()),
+        )
+        export_view.set_dashboard(dashboard_payload)
+        export_view.tree.resizeColumnToContents(0)
+        left_width = max(
+            340,
+            export_view.tree.sizeHintForColumn(0) + 36,
+            source.splitter.sizes()[0] if source is not None else 0,
+        )
+        left_width = min(left_width, max(420, int(target_size.width() * 0.45)))
+        right_width = max(900, export_view.width() - left_width)
+        export_view.splitter.setSizes([left_width, right_width])
+        export_view.tree.setColumnWidth(0, max(220, left_width - 24))
+        if not options.include_dependencies:
+            for item in export_view.connector_items:
+                item.setVisible(False)
+        if options.scope == "full":
+            export_view.expand_all()
+            export_view.fit_project()
+            export_view.view.horizontalScrollBar().setValue(0)
+            export_view.view.verticalScrollBar().setValue(0)
+        elif source is not None:
+            if source.selected_uid:
+                export_view.select_item(
+                    str((source._selected_row() or {}).get("kind") or ""),
+                    int((source._selected_row() or {}).get("item_id") or 0),
+                    ensure_visible=False,
+                )
+            export_view.view.horizontalScrollBar().setValue(
+                source.view.horizontalScrollBar().value()
+            )
+            export_view.view.verticalScrollBar().setValue(
+                source.view.verticalScrollBar().value()
+            )
+            export_view.tree.verticalScrollBar().setValue(
+                source.tree.verticalScrollBar().value()
+            )
+        QApplication.processEvents()
+        return export_view
+
+    def _export_current_timeline_pdf(self):
+        dashboard = self._current_report_dashboard()
+        if not dashboard:
+            QMessageBox.information(
+                self,
+                "No project selected",
+                "Select a project or open the Project cockpit for a project first.",
+            )
+            return
+        project_name = sanitize_filename(
+            str((dashboard.get("project") or {}).get("description") or ""),
+            "project-timeline",
+        )
+        dlg = TimelineExportDialog(
+            default_path=str(Path.home() / f"{project_name}-timeline.pdf"),
+            parent=self,
+        )
+        if dlg.exec() != dlg.DialogCode.Accepted:
+            return
+        options = dlg.timeline_options()
+        export_view = self._create_timeline_export_view(dashboard, options)
+        try:
+            timeline_range = self._timeline_date_range_label(export_view, options.scope)
+            export_range_start = export_view.range_start
+            export_range_end = export_view.range_end
+            source_timeline = (
+                self.project_panel.timeline_widget
+                if hasattr(self, "project_panel") and hasattr(self.project_panel, "timeline_widget")
+                else None
+            )
+            if options.scope == "visible" and source_timeline is not None:
+                rect = (
+                    source_timeline.view
+                    .mapToScene(source_timeline.view.viewport().rect())
+                    .boundingRect()
+                )
+                export_range_start = source_timeline.scene_x_to_date(rect.left())
+                export_range_end = source_timeline.scene_x_to_date(rect.right())
+            payload = build_timeline_pdf_payload(
+                export_view,
+                title=f"Timeline: {str((dashboard.get('project') or {}).get('description') or '')}",
+                subtitle_lines=[
+                    timeline_range,
+                    f"Scope: {'Current visible view' if options.scope == 'visible' else 'Fit full project'}",
+                    f"Dependencies: {'Included' if options.include_dependencies else 'Hidden'}",
+                ],
+                footer_lines=[f"Exported: {timestamp_string()}"],
+                options=options,
+                range_start=export_range_start,
+                range_end=export_range_end,
+            )
+            render_timeline_to_pdf(payload)
+        finally:
+            export_view.deleteLater()
+        QMessageBox.information(
+            self,
+            "Timeline exported",
+            f"Saved timeline PDF to:\n{options.file_path}",
+        )
+
+    def _export_current_task_list_report(self):
+        report = self._build_current_task_list_report()
+        perspective = sanitize_filename(str(self.view_mode.currentText() or "task-list"), "task-list")
+        dlg = TaskListReportDialog(
+            default_path=str(Path.home() / f"{perspective}-tasks.pdf"),
+            parent=self,
+        )
+        if dlg.exec() != dlg.DialogCode.Accepted:
+            return
+        html = build_task_list_report_html(report)
+        if dlg.output_mode() == "print":
+            printed = print_html_report(
+                html,
+                title=report.title,
+                parent=self,
+                page_size=str(dlg.page_size_combo.currentData() or "A4"),
+                orientation=str(dlg.orientation_combo.currentData() or "landscape"),
+            )
+            if printed:
+                QMessageBox.information(self, "Task list sent", "The current task list was sent to the printer.")
+            return
+        options = dlg.pdf_options()
+        render_html_to_pdf(html, options)
+        QMessageBox.information(
+            self,
+            "Task list exported",
+            f"Saved task list report to:\n{options.file_path}",
+        )
+
+    def _export_project_summary_sheet(self):
+        dashboard = self._current_report_dashboard()
+        if not dashboard:
+            QMessageBox.information(
+                self,
+                "No project selected",
+                "Select a project or open the Project cockpit for a project first.",
+            )
+            return
+        report = self._build_project_summary_report(dashboard)
+        project_name = sanitize_filename(
+            str((dashboard.get("project") or {}).get("description") or ""),
+            "project-summary",
+        )
+        dlg = ProjectSummaryExportDialog(
+            default_path=str(Path.home() / f"{project_name}-summary.pdf"),
+            parent=self,
+        )
+        if dlg.exec() != dlg.DialogCode.Accepted:
+            return
+        render_html_to_pdf(build_project_summary_html(report), dlg.pdf_options())
+        QMessageBox.information(
+            self,
+            "Project summary exported",
+            f"Saved project summary sheet to:\n{dlg.file_edit.text().strip()}",
+        )
 
     def _refresh_project_panel(self):
         self._refresh_project_panel_from_details(
@@ -3524,6 +4016,27 @@ class MainWindow(QMainWindow):
                 lambda: (self.project_dock.show(), self._toggle_project_act.setChecked(True), self._refresh_project_panel()),
             ),
             PaletteCommand(
+                "reports.timeline_pdf",
+                "Export current timeline to PDF",
+                "Export the current Project cockpit timeline to a PDF report",
+                ("report", "pdf", "timeline", "gantt", "project"),
+                self._export_current_timeline_pdf,
+            ),
+            PaletteCommand(
+                "reports.task_list",
+                "Export current task list",
+                "Print or export the current filtered task list",
+                ("report", "print", "pdf", "tasks", "filtered"),
+                self._export_current_task_list_report,
+            ),
+            PaletteCommand(
+                "reports.project_summary",
+                "Export project summary",
+                "Generate a one-page project summary sheet for the current project",
+                ("report", "summary", "project", "pdf"),
+                self._export_project_summary_sheet,
+            ),
+            PaletteCommand(
                 "ui.open_capture_navigation",
                 "Open capture/navigation panel",
                 "Show the dock that contains quick add, search, sort, and perspective controls",
@@ -4645,6 +5158,15 @@ class MainWindow(QMainWindow):
         workspace_profiles_act.setShortcut(shortcut_sequence("Ctrl+Alt+W"))
         workspace_profiles_act.triggered.connect(self._open_workspace_manager)
 
+        export_timeline_pdf_act = QAction("Export current timeline to PDF…", self)
+        export_timeline_pdf_act.triggered.connect(self._export_current_timeline_pdf)
+
+        export_task_list_act = QAction("Current task list report…", self)
+        export_task_list_act.triggered.connect(self._export_current_task_list_report)
+
+        export_project_summary_act = QAction("Export project summary sheet…", self)
+        export_project_summary_act.triggered.connect(self._export_project_summary_sheet)
+
         command_palette_act = QAction("Command palette…", self)
         command_palette_act.setShortcut(shortcut_sequence("Ctrl+Shift+P"))
         command_palette_act.triggered.connect(self._open_command_palette)
@@ -4716,6 +5238,11 @@ class MainWindow(QMainWindow):
         backup_now_act = QAction("Create snapshot now", self)
         backup_now_act.triggered.connect(self._create_backup_now)
         m_backup.addAction(backup_now_act)
+
+        m_reports = m_file.addMenu("Reports")
+        m_reports.addAction(export_timeline_pdf_act)
+        m_reports.addAction(export_task_list_act)
+        m_reports.addAction(export_project_summary_act)
 
         m_file.addSeparator()
         exit_act = QAction("Exit", self)
@@ -4800,6 +5327,10 @@ class MainWindow(QMainWindow):
         m_tools.addAction(quick_capture_act)
         m_tools.addSeparator()
         m_tools.addAction(command_palette_act)
+        m_tools.addSeparator()
+        m_tools.addAction(export_timeline_pdf_act)
+        m_tools.addAction(export_task_list_act)
+        m_tools.addAction(export_project_summary_act)
         m_tools.addSeparator()
         m_tools.addAction(workspace_profiles_act)
         m_tools.addAction(snapshot_history_act)
