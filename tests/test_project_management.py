@@ -458,6 +458,7 @@ def test_project_root_template_roundtrip_preserves_project_state(tmp_path, qapp)
             "project_status_health": "at_risk",
             "summary": "Template coverage",
             "category": "Product",
+            "unassigned_phase_gantt_color_hex": "#224466",
         },
     )
     phases = db.fetch_project_phases(project_id)
@@ -540,6 +541,10 @@ def test_project_root_template_roundtrip_preserves_project_state(tmp_path, qapp)
     assert new_dashboard["profile"]["owner"] == "Alice"
     assert new_dashboard["baseline"]["effort_minutes"] == 360
     assert str(new_dashboard["project"].get("gantt_color_hex") or "").lower() == "#223344"
+    assert (
+        str(new_dashboard["summary"].get("unassigned_phase_gantt_color_hex") or "").lower()
+        == "#224466"
+    )
     new_phases = {str(row["name"]): row for row in new_dashboard["phases"]}
     assert str(new_phases["Planning"].get("gantt_color_hex") or "").lower() == "#552277"
 

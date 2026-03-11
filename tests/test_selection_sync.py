@@ -4,6 +4,7 @@ from datetime import date
 
 from PySide6.QtCore import QPointF, QSettings
 from PySide6.QtWidgets import QListWidget
+from unittest.mock import patch
 
 from gantt_ui import ROW_HEIGHT
 import main as main_module
@@ -314,6 +315,112 @@ def test_archiving_project_root_from_cockpit_removes_project_context(
         }
         assert window.model.fetch_project_dashboard(project_id) is None
         assert window.project_panel.project_combo.findData(project_id) == -1
+    finally:
+        window.close()
+        qapp.processEvents()
+
+
+def test_phase_timeline_color_change_updates_phase_bar_and_persists(
+    tmp_path,
+    qapp,
+    monkeypatch,
+):
+    window = _build_window(tmp_path, qapp, monkeypatch)
+    try:
+        assert window.model.add_task_with_values("Project A")
+        project_id = int(window.model.last_added_task_id())
+        window.model.ensure_project_profile(project_id)
+        phase_id = int(window.model.fetch_project_phases(project_id)[0]["id"])
+        milestone_id = window.db.upsert_milestone(
+            {
+                "project_task_id": project_id,
+                "title": "Kickoff complete",
+                "phase_id": phase_id,
+                "target_date": "2026-03-12",
+                "start_date": "2026-03-12",
+            }
+        )
+        assert milestone_id > 0
+
+        window.project_dock.show()
+        window._focus_task_by_id(project_id)
+        window.project_panel.tabs.setCurrentWidget(window.project_panel.timeline_tab_page)
+        qapp.processEvents()
+
+        phase_item = window.project_panel.timeline_widget.bar_items[f"phase:{phase_id}"]
+        menu = window.project_panel.timeline_widget.build_context_menu(
+            window.project_panel.timeline_widget.view.mapFromScene(
+                phase_item.base_rect().center()
+            )
+        )
+        with patch(
+            "gantt_ui.QColorDialog.getColor",
+            return_value=window.project_panel.timeline_widget.bar_color_for_row(
+                window.project_panel.timeline_widget.row_lookup[f"phase:{phase_id}"]
+            ).lighter(150),
+        ):
+            next(action for action in menu.actions() if action.text() == "Set item color…").trigger()
+        qapp.processEvents()
+
+        assert (
+            window.project_panel.timeline_widget.bar_color_for_row(
+                window.project_panel.timeline_widget.row_lookup[f"phase:{phase_id}"]
+            ).name().lower()
+            != "#1f2937"
+        )
+        stored = window.db.fetch_project_phase_by_id(phase_id)
+        assert stored is not None
+        assert str(stored.get("gantt_color_hex") or "").strip()
+    finally:
+        window.close()
+        qapp.processEvents()
+
+
+def test_unassigned_phase_timeline_color_change_updates_bar_and_persists(
+    tmp_path,
+    qapp,
+    monkeypatch,
+):
+    window = _build_window(tmp_path, qapp, monkeypatch)
+    try:
+        assert window.model.add_task_with_values("Project A")
+        project_id = int(window.model.last_added_task_id())
+        window.model.ensure_project_profile(project_id)
+        assert window.model.add_task_with_values("Loose task", parent_id=project_id)
+        task_id = int(window.model.last_added_task_id())
+        window.model.set_task_start_date(task_id, "2026-03-11")
+        window.model.set_task_due_date(task_id, "2026-03-13")
+
+        window.project_dock.show()
+        window._focus_task_by_id(project_id)
+        window.project_panel.tabs.setCurrentWidget(window.project_panel.timeline_tab_page)
+        qapp.processEvents()
+
+        unassigned_item = window.project_panel.timeline_widget.bar_items["phase:unassigned"]
+        menu = window.project_panel.timeline_widget.build_context_menu(
+            window.project_panel.timeline_widget.view.mapFromScene(
+                unassigned_item.base_rect().center()
+            )
+        )
+        labels = [action.text() for action in menu.actions()]
+        assert "Set item color…" in labels
+
+        original_color = window.project_panel.timeline_widget.bar_color_for_row(
+            window.project_panel.timeline_widget.row_lookup["phase:unassigned"]
+        ).name().lower()
+        with patch("gantt_ui.QColorDialog.getColor", return_value=window.project_panel.timeline_widget.bar_color_for_row(window.project_panel.timeline_widget.row_lookup["phase:unassigned"]).lighter(150)):
+            next(action for action in menu.actions() if action.text() == "Set item color…").trigger()
+        qapp.processEvents()
+
+        assert (
+            window.project_panel.timeline_widget.bar_color_for_row(
+                window.project_panel.timeline_widget.row_lookup["phase:unassigned"]
+            ).name().lower()
+            != original_color
+        )
+        profile = window.db.fetch_project_profile(project_id)
+        assert profile is not None
+        assert str(profile.get("unassigned_phase_gantt_color_hex") or "").strip()
     finally:
         window.close()
         qapp.processEvents()

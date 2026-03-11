@@ -277,7 +277,8 @@ def export_payload(db: Database) -> dict:
     cur.execute(
         """
         SELECT task_id, objective, scope, out_of_scope, owner, stakeholders, target_date,
-               success_criteria, project_status_health, summary, category, created_at, updated_at
+               success_criteria, project_status_health, summary, category,
+               unassigned_phase_gantt_color_hex, created_at, updated_at
         FROM project_profiles
         ORDER BY task_id;
         """
@@ -1187,10 +1188,11 @@ def _import_project_profiles_and_phases(
                 project_status_health,
                 summary,
                 category,
+                unassigned_phase_gantt_color_hex,
                 created_at,
                 updated_at
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(task_id) DO UPDATE SET
                 objective=excluded.objective,
                 scope=excluded.scope,
@@ -1202,6 +1204,7 @@ def _import_project_profiles_and_phases(
                 project_status_health=excluded.project_status_health,
                 summary=excluded.summary,
                 category=excluded.category,
+                unassigned_phase_gantt_color_hex=excluded.unassigned_phase_gantt_color_hex,
                 updated_at=excluded.updated_at;
             """,
             (
@@ -1216,6 +1219,7 @@ def _import_project_profiles_and_phases(
                 str(row.get("project_status_health") or "").strip() or None,
                 str(row.get("summary") or ""),
                 str(row.get("category") or ""),
+                str(row.get("unassigned_phase_gantt_color_hex") or "").strip() or None,
                 str(row.get("created_at") or now_iso()),
                 str(row.get("updated_at") or now_iso()),
             ),

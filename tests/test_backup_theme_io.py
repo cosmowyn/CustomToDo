@@ -24,6 +24,7 @@ def test_backup_import_roundtrip_and_replace(tmp_path, monkeypatch):
     first_project_id = int(source.list_project_profiles()[0]["task_id"])
     first_phase = next(row for row in source.fetch_project_phases(first_project_id) if row["name"] == "Planning")
     source.set_project_phase_gantt_color(int(first_phase["id"]), "#663399")
+    source.set_project_unassigned_phase_gantt_color(first_project_id, "#224466")
     source_category_folder = source.create_category_folder(
         "Visual",
         color_hex="#224466",
@@ -78,6 +79,12 @@ def test_backup_import_roundtrip_and_replace(tmp_path, monkeypatch):
         if row["name"] == "Planning"
     )
     assert str(imported_first_phase.get("gantt_color_hex") or "").lower() == "#663399"
+    imported_first_profile = target.fetch_project_profile(first_project_id)
+    assert imported_first_profile is not None
+    assert (
+        str(imported_first_profile.get("unassigned_phase_gantt_color_hex") or "").lower()
+        == "#224466"
+    )
 
 
 def test_backup_import_merge_and_missing_custom_columns(tmp_path, monkeypatch):

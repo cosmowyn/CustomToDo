@@ -440,6 +440,68 @@ def test_gantt_context_menu_supports_phase_color_actions(qapp):
     assert reset == [("phase", 10)]
 
 
+def test_gantt_context_menu_supports_unassigned_phase_color_actions(qapp):
+    widget = ProjectGanttView()
+    widget.resize(1100, 480)
+    dashboard = _sample_dashboard()
+    dashboard["summary"]["unassigned_phase_gantt_color_hex"] = "#224466"
+    dashboard["tasks"].append(
+        {
+            "id": 7,
+            "description": "Loose task",
+            "parent_id": 1,
+            "phase_id": None,
+            "start_date": "2026-03-11",
+            "due_date": "2026-03-13",
+            "status": "Todo",
+            "progress_percent": 0,
+            "blocked_by_count": 0,
+            "waiting_for": "",
+            "sort_order": 3,
+        }
+    )
+    dashboard["timeline_rows"] = build_timeline_rows(
+        dashboard["project"],
+        dashboard["phases"],
+        dashboard["tasks"],
+        dashboard["milestones"],
+        dashboard["deliverables"],
+        dashboard["summary"],
+        dashboard["dependencies"],
+    )
+    widget.set_dashboard(dashboard)
+    widget.show()
+    qapp.processEvents()
+
+    unassigned_row = widget.row_lookup["phase:unassigned"]
+    unassigned_item = widget.bar_items["phase:unassigned"]
+    unassigned_pos = widget.view.mapFromScene(unassigned_item.base_rect().center())
+    menu = widget.build_context_menu(unassigned_pos)
+    labels = [action.text() for action in menu.actions()]
+
+    assert "Set item color…" in labels
+    assert "Reset item color to default" in labels
+
+    changed: list[tuple[str, int, object]] = []
+    reset: list[tuple[str, int]] = []
+    widget.itemColorChangeRequested.connect(
+        lambda kind, item_id, color: changed.append((str(kind), int(item_id), color))
+    )
+    widget.itemColorResetRequested.connect(
+        lambda kind, item_id: reset.append((str(kind), int(item_id)))
+    )
+
+    with patch(
+        "gantt_ui.QColorDialog.getColor",
+        return_value=widget.bar_color_for_row(unassigned_row).lighter(120),
+    ):
+        next(action for action in menu.actions() if action.text() == "Set item color…").trigger()
+    next(action for action in menu.actions() if action.text() == "Reset item color to default").trigger()
+
+    assert changed and changed[0][0:2] == ("phase_unassigned", 1)
+    assert reset == [("phase_unassigned", 1)]
+
+
 def test_timeline_header_uses_separate_bands_and_keeps_today_badge_out_of_minor_row(qapp):
     header = TimelineHeaderWidget()
     header.resize(900, header.height())

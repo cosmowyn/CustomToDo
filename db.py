@@ -32,7 +32,7 @@ from project_management import (
 
 
 RECURRENCE_FREQUENCIES = {"daily", "weekly", "monthly", "yearly"}
-LATEST_SCHEMA_VERSION = 9
+LATEST_SCHEMA_VERSION = 10
 MAX_CATEGORY_FOLDER_DEPTH = 10
 
 
@@ -316,6 +316,28 @@ class Database:
             for name in sorted(required_phase_columns - phase_columns):
                 issues.append(f"Missing required project_phases column: {name}")
 
+        required_project_profile_columns = {
+            "task_id",
+            "objective",
+            "scope",
+            "out_of_scope",
+            "owner",
+            "stakeholders",
+            "target_date",
+            "success_criteria",
+            "project_status_health",
+            "summary",
+            "category",
+            "unassigned_phase_gantt_color_hex",
+            "created_at",
+            "updated_at",
+        }
+        if "project_profiles" in existing_tables:
+            cur.execute("PRAGMA table_info(project_profiles);")
+            project_profile_columns = {str(r["name"]) for r in cur.fetchall()}
+            for name in sorted(required_project_profile_columns - project_profile_columns):
+                issues.append(f"Missing required project_profiles column: {name}")
+
         required_category_folder_columns = {
             "id",
             "name",
@@ -446,6 +468,12 @@ class Database:
             cur.execute("PRAGMA user_version=9;")
             self.conn.commit()
             ver = 9
+
+        if ver < 10:
+            self._migrate_to_v10_project_profile_unassigned_phase_color()
+            cur.execute("PRAGMA user_version=10;")
+            self.conn.commit()
+            ver = 10
 
     def _create_v1(self):
         cur = self.conn.cursor()
@@ -690,6 +718,7 @@ class Database:
                 project_status_health  TEXT    NULL,
                 summary                TEXT    NOT NULL DEFAULT '',
                 category               TEXT    NOT NULL DEFAULT '',
+                unassigned_phase_gantt_color_hex TEXT NULL,
                 created_at             TEXT    NOT NULL,
                 updated_at             TEXT    NOT NULL,
                 FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
@@ -885,6 +914,13 @@ class Database:
 
     def _migrate_to_v9_category_folder_text_colors(self):
         self._add_column_if_missing("category_folders", "text_color_hex", "TEXT NULL")
+
+    def _migrate_to_v10_project_profile_unassigned_phase_color(self):
+        self._add_column_if_missing(
+            "project_profiles",
+            "unassigned_phase_gantt_color_hex",
+            "TEXT NULL",
+        )
 
     @contextmanager
     def tx(self):
@@ -3566,10 +3602,11 @@ class Database:
                     project_status_health,
                     summary,
                     category,
+                    unassigned_phase_gantt_color_hex,
                     created_at,
                     updated_at
                 )
-                VALUES(?, '', '', '', 'Self', '', NULL, '', NULL, '', '', ?, ?);
+                VALUES(?, '', '', '', 'Self', '', NULL, '', NULL, '', '', NULL, ?, ?);
                 """,
                 (int(project_task_id), stamp, stamp),
             )
@@ -3598,10 +3635,11 @@ class Database:
                     project_status_health,
                     summary,
                     category,
+                    unassigned_phase_gantt_color_hex,
                     created_at,
                     updated_at
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(task_id) DO UPDATE SET
                     objective=excluded.objective,
                     scope=excluded.scope,
@@ -3613,6 +3651,7 @@ class Database:
                     project_status_health=excluded.project_status_health,
                     summary=excluded.summary,
                     category=excluded.category,
+                    unassigned_phase_gantt_color_hex=excluded.unassigned_phase_gantt_color_hex,
                     updated_at=excluded.updated_at;
                 """,
                 (
@@ -3627,11 +3666,32 @@ class Database:
                     health,
                     str(payload.get("summary") or ""),
                     str(payload.get("category") or ""),
+                    str(payload.get("unassigned_phase_gantt_color_hex") or "").strip() or None,
                     now_iso(),
                     now_iso(),
                 ),
             )
         return self.fetch_project_profile(int(project_task_id)) or {"task_id": int(project_task_id)}
+
+    def set_project_unassigned_phase_gantt_color(
+        self,
+        project_task_id: int,
+        color_hex: str | None,
+    ):
+        if not self._project_exists(int(project_task_id)):
+            raise ValueError("Project task not found.")
+        normalized = str(color_hex or "").strip() or None
+        self.ensure_project_profile(int(project_task_id))
+        with self.tx():
+            cur = self.conn.cursor()
+            cur.execute(
+                """
+                UPDATE project_profiles
+                SET unassigned_phase_gantt_color_hex=?, updated_at=?
+                WHERE task_id=?;
+                """,
+                (normalized, now_iso(), int(project_task_id)),
+            )
 
     def fetch_project_phases(self, project_task_id: int) -> list[dict]:
         self.ensure_project_profile(int(project_task_id))
@@ -5064,6 +5124,9 @@ class Database:
                 "project_status_health": profile.get("project_status_health"),
                 "summary": str(profile.get("summary") or ""),
                 "category": str(profile.get("category") or ""),
+                "unassigned_phase_gantt_color_hex": (
+                    str(profile.get("unassigned_phase_gantt_color_hex") or "").strip() or None
+                ),
             },
             "phases": [
                 {
@@ -5123,10 +5186,11 @@ class Database:
                     project_status_health,
                     summary,
                     category,
+                    unassigned_phase_gantt_color_hex,
                     created_at,
                     updated_at
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(task_id) DO UPDATE SET
                     objective=excluded.objective,
                     scope=excluded.scope,
@@ -5138,6 +5202,7 @@ class Database:
                     project_status_health=excluded.project_status_health,
                     summary=excluded.summary,
                     category=excluded.category,
+                    unassigned_phase_gantt_color_hex=excluded.unassigned_phase_gantt_color_hex,
                     updated_at=excluded.updated_at;
                 """,
                 (
@@ -5152,6 +5217,7 @@ class Database:
                     normalize_health(profile.get("project_status_health")),
                     str(profile.get("summary") or ""),
                     str(profile.get("category") or ""),
+                    str(profile.get("unassigned_phase_gantt_color_hex") or "").strip() or None,
                     stamp,
                     stamp,
                 ),

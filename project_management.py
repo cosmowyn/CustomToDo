@@ -465,6 +465,9 @@ def build_project_summary(
         "inferred_health_reason": inferred_reason,
         "objective": str((profile or {}).get("objective") or ""),
         "summary": str((profile or {}).get("summary") or ""),
+        "unassigned_phase_gantt_color_hex": (
+            str((profile or {}).get("unassigned_phase_gantt_color_hex") or "").strip() or None
+        ),
         "active_task_count": len(active_tasks),
         "overdue_task_count": len(overdue_tasks),
         "milestone_open_count": len(open_milestones),
@@ -521,6 +524,7 @@ def build_timeline_rows(
             "id": int(row["id"]),
             "name": str(row.get("name") or ""),
             "sort_order": int(row.get("sort_order") or 0),
+            "gantt_color_hex": str(row.get("gantt_color_hex") or "").strip() or None,
         }
         for row in phases
         if row.get("id") is not None
@@ -722,7 +726,7 @@ def build_timeline_rows(
                 "gantt_color_hex": (
                     str(phase_map.get(int(phase_id), {}).get("gantt_color_hex") or "").strip() or None
                     if phase_id is not None
-                    else None
+                    else str(summary.get("unassigned_phase_gantt_color_hex") or "").strip() or None
                 ),
                 "summary_row": True,
                 "render_style": "summary",

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import os
 from datetime import date, timedelta
 
 from PySide6.QtCore import (
@@ -56,6 +58,8 @@ from theme import ThemeManager
 from ui_layout import add_left_aligned_buttons, configure_box_layout
 from ui_perf import measure_ui
 
+logger = logging.getLogger(__name__)
+
 ROW_HEIGHT = 28
 HEADER_HEIGHT = 58
 LEFT_COLUMN_WIDTH = 300
@@ -74,6 +78,17 @@ GANTT_SCALE_PRESETS = {
     "week": ("Week", 12.0),
     "month": ("Month", 4.5),
 }
+
+_GANTT_COLOR_DEBUG = bool(os.environ.get("GRIDORYN_DEBUG_GANTT_COLOR"))
+
+
+def _debug_gantt_color(event: str, **details):
+    if not (_GANTT_COLOR_DEBUG or logger.isEnabledFor(logging.DEBUG)):
+        return
+    payload = ", ".join(
+        f"{key}={details[key]!r}" for key in sorted(details.keys())
+    )
+    logger.debug("gantt-color %s: %s", event, payload)
 
 
 def _timeline_uid(kind: str, item_id: int | str) -> str:
@@ -1285,6 +1300,15 @@ class ProjectGanttView(QWidget):
         if override.isValid():
             fill = override
             text = _best_contrast(fill)
+            _debug_gantt_color(
+                "resolve",
+                uid=str(row.get("uid") or ""),
+                kind=str(row.get("kind") or ""),
+                item_id=int(row.get("item_id") or 0),
+                render_style=style,
+                override=override.name(),
+                resolved=override.name(),
+            )
             return {
                 "fill": fill,
                 "text": text,
@@ -1344,13 +1368,27 @@ class ProjectGanttView(QWidget):
         return self._bar_style_for_row(row)["border"]
 
     @staticmethod
-    def _row_supports_local_color(row: dict | None) -> bool:
+    def _row_color_target(row: dict | None) -> tuple[str, int] | None:
         if not isinstance(row, dict):
-            return False
+            return None
         kind = str(row.get("kind") or "").strip().lower()
         if kind == "phase":
-            return int(row.get("item_id") or 0) > 0
-        return kind in {"project", "task", "milestone", "deliverable"}
+            phase_id = int(row.get("item_id") or 0)
+            if phase_id > 0:
+                return ("phase", phase_id)
+            project_id = int(row.get("linked_task_id") or 0)
+            if project_id > 0:
+                return ("phase_unassigned", project_id)
+            return None
+        if kind in {"project", "task", "milestone", "deliverable"}:
+            item_id = int(row.get("item_id") or 0)
+            if item_id > 0:
+                return (kind, item_id)
+        return None
+
+    @classmethod
+    def _row_supports_local_color(cls, row: dict | None) -> bool:
+        return cls._row_color_target(row) is not None
 
     def row_is_editable(self, row: dict) -> bool:
         return bool(row.get("editable_move") or row.get("editable_start") or row.get("editable_end"))
@@ -2536,8 +2574,10 @@ class ProjectGanttView(QWidget):
         return True
 
     def _request_row_color_change(self, row: dict):
-        if not self._row_supports_local_color(row):
+        target = self._row_color_target(row)
+        if target is None:
             return
+        target_kind, target_id = target
         chosen = QColorDialog.getColor(
             self.bar_color_for_row(row),
             self,
@@ -2545,18 +2585,37 @@ class ProjectGanttView(QWidget):
         )
         if not chosen.isValid():
             return
+        _debug_gantt_color(
+            "request-change",
+            uid=str(row.get("uid") or ""),
+            row_kind=str(row.get("kind") or ""),
+            row_item_id=int(row.get("item_id") or 0),
+            target_kind=target_kind,
+            target_id=int(target_id),
+            chosen=chosen.name(),
+        )
         self.itemColorChangeRequested.emit(
-            str(row.get("kind") or ""),
-            int(row.get("item_id") or 0),
+            str(target_kind),
+            int(target_id),
             chosen.name(),
         )
 
     def _request_row_color_reset(self, row: dict):
-        if not self._row_supports_local_color(row):
+        target = self._row_color_target(row)
+        if target is None:
             return
+        target_kind, target_id = target
+        _debug_gantt_color(
+            "request-reset",
+            uid=str(row.get("uid") or ""),
+            row_kind=str(row.get("kind") or ""),
+            row_item_id=int(row.get("item_id") or 0),
+            target_kind=target_kind,
+            target_id=int(target_id),
+        )
         self.itemColorResetRequested.emit(
-            str(row.get("kind") or ""),
-            int(row.get("item_id") or 0),
+            str(target_kind),
+            int(target_id),
         )
 
     def _default_anchor_date_for_row(self, row: dict | None) -> date:
@@ -2607,7 +2666,18 @@ class ProjectGanttView(QWidget):
             focus_action.triggered.connect(lambda: self.activate_row(row))
             menu.addAction(focus_action)
 
-        if self._row_supports_local_color(row):
+        color_target = self._row_color_target(row)
+        _debug_gantt_color(
+            "context-menu",
+            uid=str((row or {}).get("uid") or ""),
+            row_kind=str((row or {}).get("kind") or ""),
+            row_item_id=int((row or {}).get("item_id") or 0),
+            render_style=str((row or {}).get("render_style") or ""),
+            supports_color=bool(color_target is not None),
+            target_kind=(color_target[0] if color_target is not None else None),
+            target_id=(int(color_target[1]) if color_target is not None else None),
+        )
+        if color_target is not None:
             menu.addSeparator()
             set_color_action = QAction("Set item color…", menu)
             set_color_action.triggered.connect(

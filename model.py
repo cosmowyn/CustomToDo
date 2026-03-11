@@ -12,7 +12,7 @@ from PySide6.QtGui import QColor, QUndoStack, QIcon, QFont
 from commands import (
     AddTaskCommand, DeleteSubtreeCommand, EditCellCommand, MoveNodeCommand,
     AddCustomColumnCommand, RemoveCustomColumnCommand,
-    DeliverableMutationCommand, MilestoneMutationCommand, ProjectPhaseMutationCommand, TaskMutationCommand,
+    DeliverableMutationCommand, MilestoneMutationCommand, ProjectPhaseMutationCommand, ProjectProfileMutationCommand, TaskMutationCommand,
     TaskCollectionMutationCommand, CreateTasksFromPayloadCommand,
 )
 from category_folders_ui import (
@@ -1365,6 +1365,29 @@ class TaskTreeModel(QAbstractItemModel):
         self.reload_all(reset_header_state=False)
         return data
 
+    def capture_project_profile_snapshot(self, project_task_id: int) -> dict | None:
+        return self.db.fetch_project_profile(int(project_task_id))
+
+    def _restore_project_profile_snapshot(self, snapshot: dict):
+        if not snapshot:
+            return
+        payload = {
+            "objective": str(snapshot.get("objective") or ""),
+            "scope": str(snapshot.get("scope") or ""),
+            "out_of_scope": str(snapshot.get("out_of_scope") or ""),
+            "owner": str(snapshot.get("owner") or "Self") or "Self",
+            "stakeholders": str(snapshot.get("stakeholders") or ""),
+            "target_date": snapshot.get("target_date"),
+            "success_criteria": str(snapshot.get("success_criteria") or ""),
+            "project_status_health": snapshot.get("project_status_health"),
+            "summary": str(snapshot.get("summary") or ""),
+            "category": str(snapshot.get("category") or ""),
+            "unassigned_phase_gantt_color_hex": (
+                str(snapshot.get("unassigned_phase_gantt_color_hex") or "").strip() or None
+            ),
+        }
+        self.db.save_project_profile(int(snapshot["task_id"]), payload)
+
     def fetch_project_phases(self, project_task_id: int) -> list[dict]:
         return self.db.fetch_project_phases(int(project_task_id))
 
@@ -1431,6 +1454,21 @@ class TaskTreeModel(QAbstractItemModel):
                     phase_id,
                     "Set Gantt item color" if normalized_color else "Reset Gantt item color",
                     lambda: self.db.set_project_phase_gantt_color(phase_id, normalized_color),
+                )
+            )
+            return
+
+        if normalized_kind == "phase_unassigned":
+            project_task_id = int(item_id)
+            self.undo_stack.push(
+                ProjectProfileMutationCommand(
+                    self,
+                    project_task_id,
+                    "Set Gantt item color" if normalized_color else "Reset Gantt item color",
+                    lambda: self.db.set_project_unassigned_phase_gantt_color(
+                        project_task_id,
+                        normalized_color,
+                    ),
                 )
             )
             return

@@ -5555,6 +5555,7 @@ class MainWindow(QMainWindow):
             log_exception(e, context="project-timeline-color", db_path=self.db.path)
             QMessageBox.warning(self, "Timeline color failed", str(e))
             return
+        self._mark_project_panel_dirty("timeline color")
         self._refresh_project_panel()
 
     def _project_panel_reset_timeline_item_color(self, kind: str, item_id: int):
