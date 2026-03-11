@@ -63,6 +63,16 @@ def _resolve_build_python() -> Path:
     return build_python
 
 
+def _windows_pyinstaller_executable(project_root: Path) -> Path:
+    pyinstaller_exe = (project_root / VENV_DIR / "Scripts" / "pyinstaller.exe").resolve()
+    if not pyinstaller_exe.exists():
+        raise FileNotFoundError(
+            "Windows build requires the project-local PyInstaller executable.\n"
+            f"Expected:\n  {pyinstaller_exe}"
+        )
+    return pyinstaller_exe
+
+
 def _print_build_diagnostics(project_root: Path, build_python: Path) -> None:
     print(f"Build Python: {build_python}")
     print(f"sys.executable: {sys.executable}")
@@ -71,12 +81,13 @@ def _print_build_diagnostics(project_root: Path, build_python: Path) -> None:
     print(f"Project root: {project_root}")
 
 
-def _verify_pyinstaller(build_python: Path) -> None:
-    result = subprocess.run(
-        [str(build_python), "-m", "PyInstaller", "--version"],
-        capture_output=True,
-        text=True,
-    )
+def _verify_pyinstaller(project_root: Path, build_python: Path) -> None:
+    if _is_windows():
+        verify_cmd = [str(_windows_pyinstaller_executable(project_root)), "--version"]
+    else:
+        verify_cmd = [str(build_python), "-m", "PyInstaller", "--version"]
+
+    result = subprocess.run(verify_cmd, capture_output=True, text=True)
     if result.returncode == 0:
         version_text = (result.stdout or result.stderr or "").strip()
         if version_text:
@@ -85,6 +96,8 @@ def _verify_pyinstaller(build_python: Path) -> None:
 
     print("ERROR: PyInstaller is not available in the current build interpreter.")
     print(f"Interpreter: {build_python}")
+    if _is_windows():
+        print(f"PyInstaller executable: {_windows_pyinstaller_executable(project_root)}")
     if result.stdout:
         print("\nPyInstaller stdout:")
         print(result.stdout)
@@ -355,25 +368,39 @@ def _resolve_splash(project_root: Path) -> str | None:
 
 
 def _pyinstaller_cmd(
+    project_root: Path,
     build_python: Path,
     entry_script: Path,
     app_name: str,
     splash: str | None,
     icon: str | None,
 ) -> list[str]:
-    cmd = [
-        str(build_python),
-        "-m",
-        "PyInstaller",
-        str(entry_script),
-        "--name",
-        app_name,
-        "--noconfirm",
-        "--clean",
-        "--windowed",
-        "--log-level",
-        "INFO",
-    ]
+    if _is_windows():
+        cmd = [
+            str(_windows_pyinstaller_executable(project_root)),
+            str(entry_script),
+            "--name",
+            app_name,
+            "--noconfirm",
+            "--clean",
+            "--windowed",
+            "--log-level",
+            "INFO",
+        ]
+    else:
+        cmd = [
+            str(build_python),
+            "-m",
+            "PyInstaller",
+            str(entry_script),
+            "--name",
+            app_name,
+            "--noconfirm",
+            "--clean",
+            "--windowed",
+            "--log-level",
+            "INFO",
+        ]
 
     if _is_windows():
         cmd.append("--onefile")
@@ -412,7 +439,7 @@ def main() -> int:
     build_python = _resolve_build_python()
     _print_build_diagnostics(project_root, build_python)
     try:
-        _verify_pyinstaller(build_python)
+        _verify_pyinstaller(project_root, build_python)
     except Exception as exc:
         print(str(exc))
         return 1
@@ -439,6 +466,7 @@ def main() -> int:
             shutil.rmtree(path, ignore_errors=True)
 
     cmd = _pyinstaller_cmd(
+        project_root=project_root,
         build_python=build_python,
         entry_script=entry_script,
         app_name=APP_NAME,

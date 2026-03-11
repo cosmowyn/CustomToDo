@@ -60,6 +60,9 @@ def test_verify_pyinstaller_uses_current_interpreter(monkeypatch, tmp_path: Path
     active_python = tmp_path / "active-venv" / "Scripts" / "python.exe"
     active_python.parent.mkdir(parents=True)
     active_python.write_text("", encoding="utf-8")
+    pyinstaller_exe = tmp_path / ".venv" / "Scripts" / "pyinstaller.exe"
+    pyinstaller_exe.parent.mkdir(parents=True)
+    pyinstaller_exe.write_text("", encoding="utf-8")
 
     calls: list[list[str]] = []
 
@@ -68,8 +71,10 @@ def test_verify_pyinstaller_uses_current_interpreter(monkeypatch, tmp_path: Path
         return subprocess.CompletedProcess(cmd, 0, stdout="6.10.0\n", stderr="")
 
     monkeypatch.setattr(buildfile.subprocess, "run", _fake_run)
-    buildfile._verify_pyinstaller(active_python)
-    assert calls == [[str(active_python), "-m", "PyInstaller", "--version"]]
+    monkeypatch.setattr(buildfile, "_is_windows", lambda: True)
+    monkeypatch.setattr(buildfile, "_is_macos", lambda: False)
+    buildfile._verify_pyinstaller(tmp_path, active_python)
+    assert calls == [[str(pyinstaller_exe.resolve()), "--version"]]
 
 
 def test_resolve_icon_accepts_repo_root_icon_ico_on_windows(monkeypatch, tmp_path: Path):
@@ -118,11 +123,14 @@ def test_pyinstaller_cmd_uses_absolute_paths_and_windows_add_data(monkeypatch, t
     python = (project_root / ".venv" / "Scripts" / "python.exe").resolve()
     python.parent.mkdir(parents=True)
     python.write_text("", encoding="utf-8")
+    pyinstaller_exe = (project_root / ".venv" / "Scripts" / "pyinstaller.exe").resolve()
+    pyinstaller_exe.write_text("", encoding="utf-8")
 
     monkeypatch.setattr(buildfile, "_is_windows", lambda: True)
     monkeypatch.setattr(buildfile, "_is_macos", lambda: False)
 
     cmd = buildfile._pyinstaller_cmd(
+        project_root=project_root,
         build_python=python,
         entry_script=entry_script,
         app_name=APP_NAME,
@@ -130,7 +138,7 @@ def test_pyinstaller_cmd_uses_absolute_paths_and_windows_add_data(monkeypatch, t
         icon=str(icon),
     )
 
-    assert cmd[0] == str(python)
+    assert cmd[0] == str(pyinstaller_exe)
     assert str(entry_script) in cmd
     assert str(splash) in cmd
     assert str(icon) in cmd
