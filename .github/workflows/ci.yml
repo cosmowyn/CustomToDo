@@ -93,6 +93,7 @@ jobs:
               tests/test_relationships.py
           - name: ui-a
             timeout: 12m
+            pytest_args: --maxfail=1
             files: >-
               tests/test_context_help.py
               tests/test_dialog_layouts.py
@@ -100,13 +101,22 @@ jobs:
               tests/test_interaction_utils.py
               tests/test_runtime_warnings.py
               tests/test_shortcuts.py
-          - name: ui-b
-            timeout: 15m
-            files: >-
-              tests/test_main_task_browser.py
-              tests/test_project_cockpit_ui.py
-              tests/test_project_tutorial.py
-              tests/test_selection_sync.py
+          - name: ui-b-main-task-browser
+            timeout: 8m
+            pytest_args: --maxfail=1
+            files: tests/test_main_task_browser.py
+          - name: ui-b-project-cockpit
+            timeout: 8m
+            pytest_args: --maxfail=1
+            files: tests/test_project_cockpit_ui.py
+          - name: ui-b-project-tutorial
+            timeout: 6m
+            pytest_args: --maxfail=1
+            files: tests/test_project_tutorial.py
+          - name: ui-b-selection-sync
+            timeout: 8m
+            pytest_args: --maxfail=1
+            files: tests/test_selection_sync.py
     env:
       QT_QPA_PLATFORM: offscreen
       QT_OPENGL: software
@@ -157,10 +167,10 @@ jobs:
         run: |
           set -euxo pipefail
           echo "Pytest suite start: $(date -u)"
-          echo "Command: python -m pytest -ra --durations=20 -q ${{ matrix.suite.files }}"
+          echo "Command: python -m pytest -ra --durations=20 -q ${{ matrix.suite.pytest_args || '' }} ${{ matrix.suite.files }}"
           status=0
           timeout --signal=TERM --kill-after=30s ${{ matrix.suite.timeout }} \
-            python -m pytest -ra --durations=20 -q ${{ matrix.suite.files }} || status=$?
+            python -m pytest -ra --durations=20 -q ${{ matrix.suite.pytest_args || '' }} ${{ matrix.suite.files }} || status=$?
           echo "Pytest suite end: $(date -u)"
           if [ "$status" -eq 124 ]; then
             echo "::error::Pytest timed out in suite '${{ matrix.suite.name }}' after ${{ matrix.suite.timeout }}."
