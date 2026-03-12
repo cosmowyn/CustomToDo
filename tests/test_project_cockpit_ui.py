@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from copy import deepcopy
 from unittest.mock import patch
 
 from PySide6.QtCore import QPoint, QPointF, QSettings, Qt
@@ -277,36 +278,53 @@ def test_gantt_view_uses_local_item_color_override_before_defaults(qapp):
 def test_gantt_view_uses_persisted_theme_colors_for_task_and_summary_bars(qapp):
     widget = ProjectGanttView()
     widget.resize(1100, 480)
-    widget.set_dashboard(_sample_dashboard())
+    dashboard = deepcopy(_sample_dashboard())
+    for task in dashboard["tasks"]:
+        if int(task.get("id") or 0) == 3:
+            task["start_date"] = "2030-03-10"
+            task["due_date"] = "2030-03-11"
+            task["status"] = "Todo"
+            task["blocked_by_count"] = 0
+            break
+    dashboard["timeline_rows"] = build_timeline_rows(
+        dashboard["project"],
+        dashboard["phases"],
+        dashboard["tasks"],
+        dashboard["milestones"],
+        dashboard["deliverables"],
+        dashboard["summary"],
+        dashboard["dependencies"],
+    )
+    widget.set_dashboard(dashboard)
     widget.show()
     qapp.processEvents()
-
-    original_task_color = widget.bar_color_for_row(widget.row_lookup["task:3"]).name().lower()
-    original_summary_color = widget.bar_color_for_row(widget.row_lookup["task:2"]).name().lower()
 
     settings = QSettings()
     tm = ThemeManager(settings)
     theme_name = tm.current_theme_name()
-    theme = tm.load_theme(theme_name)
-    theme["colors"]["gantt_task_bg"] = "#1122CC"
-    theme["colors"]["gantt_task_text"] = "#F8F9FA"
-    theme["colors"]["gantt_summary_bg"] = "#101820"
-    theme["colors"]["gantt_summary_text"] = "#F4EBD0"
-    tm.save_theme(theme_name, theme)
-    tm.apply_to_app(qapp)
+    original_theme = tm.load_theme(theme_name)
+    try:
+        theme = deepcopy(original_theme)
+        theme["colors"]["gantt_task_bg"] = "#1122CC"
+        theme["colors"]["gantt_task_text"] = "#F8F9FA"
+        theme["colors"]["gantt_summary_bg"] = "#101820"
+        theme["colors"]["gantt_summary_text"] = "#F4EBD0"
+        tm.save_theme(theme_name, theme)
+        tm.apply_to_app(qapp)
 
-    widget.reload_theme_colors()
-    qapp.processEvents()
+        widget.reload_theme_colors()
+        qapp.processEvents()
 
-    summary_row = widget.row_lookup["task:2"]
-    task_row = widget.row_lookup["task:3"]
+        summary_row = widget.row_lookup["project:1"]
+        task_row = widget.row_lookup["task:3"]
 
-    assert original_task_color != "#1122cc"
-    assert original_summary_color != "#101820"
-    assert widget.bar_color_for_row(task_row).name().lower() == "#1122cc"
-    assert widget.bar_text_color_for_row(task_row).name().lower() == "#f8f9fa"
-    assert widget.bar_color_for_row(summary_row).name().lower() == "#101820"
-    assert widget.bar_text_color_for_row(summary_row).name().lower() == "#f4ebd0"
+        assert widget.bar_color_for_row(task_row).name().lower() == "#1122cc"
+        assert widget.bar_text_color_for_row(task_row).name().lower() == "#f8f9fa"
+        assert widget.bar_color_for_row(summary_row).name().lower() == "#101820"
+        assert widget.bar_text_color_for_row(summary_row).name().lower() == "#f4ebd0"
+    finally:
+        tm.save_theme(theme_name, original_theme)
+        tm.apply_to_app(qapp)
 
 
 def test_gantt_view_milestone_bounds_include_label_and_toolbar_controls_fit_text(qapp):
