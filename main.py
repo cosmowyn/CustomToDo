@@ -1,3 +1,4 @@
+import hashlib
 import sys
 from copy import deepcopy
 from datetime import date, datetime, timedelta
@@ -12,6 +13,7 @@ except Exception:
 
 from PySide6.QtCore import Qt, QTimer, QModelIndex, QEvent, QDateTime, QUrl, Signal, QPersistentModelIndex
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QDesktopServices
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTreeView, QPushButton, QToolBar, QMenu, QMessageBox, QAbstractItemView,
@@ -127,6 +129,7 @@ from ui_perf import measure_ui
 
 
 _UNSET = object()
+_SINGLE_INSTANCE_TIMEOUT_MS = 1000
 
 
 class FloatingTaskTableWindow(QMainWindow):
@@ -7331,6 +7334,87 @@ class MainWindow(QMainWindow):
                 log_exception(e, context="db.close", db_path=self.db.path)
 
 
+def _single_instance_server_name() -> str:
+    identity = f"{APP_STORAGE_ORGANIZATION}:{APP_STORAGE_NAME}:{Path(app_data_dir()).resolve()}"
+    digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()
+    slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in APP_STORAGE_NAME).strip("-") or "app"
+    return f"{slug}-{digest}"
+
+
+def _request_existing_instance_activation(
+    server_name: str,
+    *,
+    timeout_ms: int = _SINGLE_INSTANCE_TIMEOUT_MS,
+) -> bool:
+    socket = QLocalSocket()
+    socket.connectToServer(server_name)
+    if not socket.waitForConnected(timeout_ms):
+        return False
+    try:
+        socket.write(b"activate")
+        socket.flush()
+        socket.waitForBytesWritten(timeout_ms)
+        return True
+    finally:
+        socket.disconnectFromServer()
+        if socket.state() != QLocalSocket.LocalSocketState.UnconnectedState:
+            socket.waitForDisconnected(timeout_ms)
+
+
+def _build_single_instance_server(server_name: str, on_activate) -> QLocalServer:
+    server = QLocalServer()
+
+    def _consume_pending_connections():
+        activated = False
+        while server.hasPendingConnections():
+            socket = server.nextPendingConnection()
+            if socket is None:
+                continue
+            activated = True
+            try:
+                socket.readAll()
+            except Exception:
+                pass
+            socket.disconnectFromServer()
+            socket.deleteLater()
+        if activated:
+            QTimer.singleShot(0, on_activate)
+
+    server.newConnection.connect(_consume_pending_connections)
+    return server
+
+
+def _acquire_single_instance_guard(
+    on_activate,
+    *,
+    server_name: str | None = None,
+) -> tuple[str, QLocalServer | None, bool]:
+    name = str(server_name or _single_instance_server_name())
+    server = _build_single_instance_server(name, on_activate)
+    if server.listen(name):
+        return name, server, False
+    if _request_existing_instance_activation(name):
+        return name, None, True
+    QLocalServer.removeServer(name)
+    if server.listen(name):
+        return name, server, False
+    if _request_existing_instance_activation(name):
+        return name, None, True
+    raise RuntimeError(f"Could not establish the single-instance listener '{name}'.")
+
+
+def _release_single_instance_guard(server_name: str, server: QLocalServer | None):
+    if server is None:
+        return
+    try:
+        server.close()
+    finally:
+        try:
+            QLocalServer.removeServer(server_name)
+        except Exception:
+            pass
+
+
 def main():
     try:
         log_event("Application startup requested", context="startup.begin", db_path=app_db_path())
@@ -7340,6 +7424,31 @@ def main():
         app.setApplicationDisplayName(APP_NAME)
         app.setApplicationVersion(APP_VERSION)
 
+        pending_activate_request = False
+        main_window: MainWindow | None = None
+
+        def _activate_existing_window():
+            nonlocal pending_activate_request, main_window
+            if main_window is None:
+                pending_activate_request = True
+                return
+            pending_activate_request = False
+            main_window._show_main_window()
+            app.setActiveWindow(main_window)
+
+        single_instance_name, single_instance_server, already_running = _acquire_single_instance_guard(
+            _activate_existing_window
+        )
+        if single_instance_server is not None:
+            app._single_instance_server = single_instance_server
+            app.aboutToQuit.connect(
+                lambda name=single_instance_name, server=single_instance_server: _release_single_instance_guard(
+                    name, server
+                )
+            )
+        if already_running:
+            return 0
+
         workspace_manager = WorkspaceProfileManager()
         current_workspace = workspace_manager.current_workspace()
         workspace_manager.ensure_workspace_state(str(current_workspace.get("id") or "default"))
@@ -7348,8 +7457,11 @@ def main():
         install_exception_hooks(current_db_path)
 
         w = MainWindow(workspace_manager, str(current_workspace.get("id") or "default"))
+        main_window = w
         w.resize(1100, 650)
         w.show()
+        if pending_activate_request:
+            QTimer.singleShot(0, _activate_existing_window)
         log_event(
             "Application main window shown",
             context="startup.ready",
